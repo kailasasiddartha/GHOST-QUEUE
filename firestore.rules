@@ -1,0 +1,214 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper functions ────────────────────────────────────────────────────
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isRealUser() {
+      return isSignedIn() && request.auth.token.firebase.sign_in_provider != "anonymous";
+    }
+
+    // Fetch the store root doc for owner/staff checks.
+    function storeDoc(storeId) {
+      return get(/databases/$(database)/documents/stores/$(storeId));
+    }
+
+    function isStoreOwner(storeId) {
+      return isRealUser()
+        && exists(/databases/$(database)/documents/stores/$(storeId))
+        && storeDoc(storeId).data.ownerId == request.auth.uid;
+    }
+
+    // Caller's email lower-cased (null if unavailable).
+    function callerEmail() {
+      return isSignedIn() && request.auth.token.email != null
+        ? request.auth.token.email.lower()
+        : null;
+    }
+
+    function hasStaffRole(storeId, role) {
+      return isSignedIn()
+        && callerEmail() != null
+        && exists(/databases/$(database)/documents/stores/$(storeId)/staffByEmail/$(callerEmail()))
+        && get(/databases/$(database)/documents/stores/$(storeId)/staffByEmail/$(callerEmail())).data.role == role;
+    }
+
+    function isStoreStaff(storeId) {
+      return isStoreOwner(storeId)
+        || hasStaffRole(storeId, "manager")
+        || hasStaffRole(storeId, "staff");
+    }
+
+    function isSelfEntry(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // Ensure a self-service entry update only touches heartbeat/signal fields.
+    function canSelfUpdateEntry() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(["last_active", "fcm_token", "running_late", "running_late_at"])
+        && (!('last_active' in request.resource.data)
+              || request.resource.data.last_active is timestamp)
+        && (!('fcm_token' in request.resource.data)
+              || request.resource.data.fcm_token == null
+              || request.resource.data.fcm_token is string)
+        && (!('running_late' in request.resource.data)
+              || request.resource.data.running_late is bool);
+    }
+
+    // ─── publicStores ─────────────────────────────────────────────────────────
+    // Customer-facing projection. Now written by the client SDK (store staff).
+
+    match /publicStores/{storeId} {
+      // Anyone (including anonymous visitors) can read store listings.
+      allow read: if true;
+
+      // Store registration: real user creates their own store's public doc.
+      allow create: if isRealUser()
+        && request.resource.data.storeId == storeId;
+
+      // Store staff can update the projection (callNext, settings, etc.).
+      allow update: if isStoreStaff(storeId);
+
+      // Only owner can delete.
+      allow delete: if isStoreOwner(storeId);
+
+      // Live queue sub-collection (read-only for customers).
+      match /liveQueue/{entryId} {
+        allow read: if true;
+        allow write: if isStoreStaff(storeId);
+      }
+    }
+
+    // ─── stores/{storeId} ─────────────────────────────────────────────────────
+    // Private store record — staff only.
+
+    match /stores/{storeId} {
+      allow read: if isRealUser() && (resource.data.ownerId == request.auth.uid || isStoreStaff(storeId));
+
+      // Registration: real user creates a store they own.
+      allow create: if isRealUser()
+        && request.resource.data.ownerId == request.auth.uid;
+
+      // Staff can update (operational state, settings, counter increments).
+      allow update: if isStoreStaff(storeId);
+
+      // No deletes from client.
+      allow delete: if false;
+    }
+
+    // ─── stores/{storeId}/meta/info ───────────────────────────────────────────
+    // Operational settings + live counters.
+
+    match /stores/{storeId}/meta/info {
+      allow read: if isStoreStaff(storeId);
+
+      // Created during store registration by the owner.
+      allow create: if isRealUser()
+        && (request.resource.data.ownerId == request.auth.uid
+            || (exists(/databases/$(database)/documents/stores/$(storeId))
+                && storeDoc(storeId).data.ownerId == request.auth.uid));
+
+      // Staff update it for every queue operation (callNext, settings, etc.).
+      allow update: if isStoreStaff(storeId);
+
+      allow delete: if false;
+    }
+
+    // ─── stores/{storeId}/entries/{entryId} ───────────────────────────────────
+    // Live queue entries.
+
+    match /stores/{storeId}/entries/{entryId} {
+      // Staff see all entries; customers see their own (entryId == uid for online joins).
+      allow read: if isStoreStaff(storeId) || isSelfEntry(entryId);
+
+      // Online join: authenticated customer creates their own entry (entryId == uid).
+      // Walk-in: staff creates an auto-ID entry.
+      allow create: if isStoreStaff(storeId)
+        || (isSignedIn() && request.resource.data.userId == request.auth.uid);
+
+      // Customers update only heartbeat/signal fields; staff update freely.
+      allow update: if isStoreStaff(storeId)
+        || (isSelfEntry(entryId) && canSelfUpdateEntry());
+
+      // Customers can delete their own entry (leave queue); staff can delete any.
+      allow delete: if isStoreStaff(storeId) || isSelfEntry(entryId);
+    }
+
+    // ─── stores/{storeId}/entries/{userId}/private/info ──────────────────────
+
+    match /stores/{storeId}/entries/{userId}/private/info {
+      allow read: if isStoreStaff(storeId) || isSelfEntry(userId);
+
+      allow create: if isStoreStaff(storeId)
+        || (isSelfEntry(userId)
+          && request.resource.data.keys().hasOnly(["preferences", "notes", "updated_at"])
+          && request.resource.data.keys().size() <= 8);
+
+      allow update: if isStoreStaff(storeId)
+        || (isSelfEntry(userId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+               .hasOnly(["preferences", "notes", "updated_at"])
+          && request.resource.data.keys().size() <= 8);
+
+      allow delete: if isStoreStaff(storeId);
+    }
+
+    // ─── stores/{storeId}/history ─────────────────────────────────────────────
+    // Served / left / no-show log. Now written by client-side staff actions.
+
+    match /stores/{storeId}/history/{historyId} {
+      allow read: if isStoreStaff(storeId);
+
+      // Staff create history entries during callNext, markNoShow, leaveQueue etc.
+      allow create: if isStoreStaff(storeId)
+        || isSignedIn(); // customers create "left" entries when leaving queue
+
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ─── stores/{storeId}/snapshots ───────────────────────────────────────────
+
+    match /stores/{storeId}/snapshots/{snapshotId} {
+      allow read: if isStoreOwner(storeId) || hasStaffRole(storeId, "manager");
+
+      // Owner/manager can save and delete snapshots from the client.
+      allow create: if isStoreOwner(storeId) || hasStaffRole(storeId, "manager");
+      allow delete: if isStoreOwner(storeId) || hasStaffRole(storeId, "manager");
+      allow update: if false;
+    }
+
+    // ─── stores/{storeId}/audit ───────────────────────────────────────────────
+
+    match /stores/{storeId}/audit/{auditId} {
+      allow read: if isStoreStaff(storeId);
+      // Staff and customers write audit entries via the client SDK.
+      allow create: if isStoreStaff(storeId) || isSignedIn();
+      allow update, delete: if false;
+    }
+
+    // ─── stores/{storeId}/staffByEmail ────────────────────────────────────────
+
+    match /stores/{storeId}/staffByEmail/{email} {
+      // Owner sees all staff; a staff member can see their own record.
+      allow read: if isStoreOwner(storeId)
+        || (isSignedIn() && callerEmail() == email);
+
+      // Only the store owner can add / remove staff.
+      allow create, update: if isStoreOwner(storeId);
+      allow delete: if isStoreOwner(storeId);
+    }
+
+    // ─── Catch-all: deny everything not explicitly matched ────────────────────
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

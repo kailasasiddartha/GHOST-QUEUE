@@ -1,0 +1,133 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-background text-on-background font-body min-h-screen selection:bg-primary/30;
+    background-color: #0c0c11;
+  }
+}
+
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+/* Glassmorphism & Glow Effects */
+.glass-glow {
+  box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.1), 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+}
+
+.glass-panel {
+  background: rgba(26, 26, 36, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.glass-panel-elevated {
+  background: rgba(33, 33, 46, 0.75);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7), 0 0 40px -10px rgba(124, 58, 237, 0.15);
+}
+
+.neon-border-violet {
+  box-shadow: 0 0 25px -5px rgba(124, 58, 237, 0.4), inset 0 0 15px -5px rgba(124, 58, 237, 0.2);
+}
+
+.neon-border-cyan {
+  box-shadow: 0 0 25px -5px rgba(34, 211, 238, 0.4), inset 0 0 15px -5px rgba(34, 211, 238, 0.2);
+}
+
+.neon-border-emerald {
+  box-shadow: 0 0 30px -5px rgba(16, 185, 129, 0.5), inset 0 0 15px -5px rgba(16, 185, 129, 0.3);
+}
+
+/* Ticket Pass Notch Perforations */
+.ticket-notch-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.ticket-notch-left,
+.ticket-notch-right {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  background-color: #0c0c11;
+  border-radius: 9999px;
+  z-index: 20;
+}
+
+.ticket-notch-left {
+  left: -12px;
+  box-shadow: inset -2px 0 3px rgba(0, 0, 0, 0.4);
+}
+
+.ticket-notch-right {
+  right: -12px;
+  box-shadow: inset 2px 0 3px rgba(0, 0, 0, 0.4);
+}
+
+.ticket-perforation {
+  border-top: 2px dashed rgba(255, 255, 255, 0.15);
+}
+
+/* Card 3D Flip */
+.perspective-1000 {
+  perspective: 1000px;
+}
+.transform-style-3d {
+  transform-style: preserve-3d;
+}
+.backface-hidden {
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.rotate-y-180 {
+  transform: rotateY(180deg);
+}
+
+/* Animations */
+.animate-pulse-slow {
+  animation: pulse-slow 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .8; transform: scale(1.03); }
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0%); }
+  100% { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  display: inline-flex;
+  white-space: nowrap;
+  animation: marquee 25s linear infinite;
+}
+
+.animate-marquee:hover {
+  animation-play-state: paused;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}

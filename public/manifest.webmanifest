@@ -1,0 +1,26 @@
+{
+  "name": "Ghost Queue",
+  "short_name": "GhostQ",
+  "description": "Join your store's virtual queue instantly — no app needed. Skip the wait, join online.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#131318",
+  "theme_color": "#7C3AED",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Admin Panel",
+      "url": "/admin",
+      "description": "Manage your store queue"
+    }
+  ]
+}
