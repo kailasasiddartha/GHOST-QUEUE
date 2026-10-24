@@ -29,6 +29,7 @@ import ToastStack from "../components/ToastStack";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { createDefaultSchedule, getEffectiveStoreStatus, normalizeSchedule } from "../utils/storeStatus";
 import { computeQueueHealthScore, getHealthIcon, getHealthColor, getHealthBgColor } from "../utils/queueIntelligence";
+import { playCallChime } from "../utils/soundEffects";
 
 const HISTORY_WINDOWS = [1, 3, 7, 30];
 const HISTORY_TYPES = ["all", "served", "left", "no_show", "closed", "stale"];
@@ -203,7 +204,7 @@ export default function AdminDashboard({ adminUser }) {
   });
   const canvasRef = useRef(null);
 
-  const { entries, totalInQueue, storeMeta, avgServiceMins } = useQueue(storeId, null);
+  const { entries, totalInQueue, storeMeta, avgServiceMins } = useQueue(storeId, null, true);
   const queueEntries = useMemo(() => [...entries].sort((a, b) => Number(a.queue_index ?? 0) - Number(b.queue_index ?? 0)), [entries]);
   const filteredQueueEntries = useMemo(() => {
     const search = queueSearch.trim().toLowerCase();
@@ -734,60 +735,97 @@ export default function AdminDashboard({ adminUser }) {
     popup.print();
   };
 
-  if (loading || fetchingStore) return (
-    <div className="min-h-screen bg-background text-on-background lg:flex">
-      <aside className="w-full border-b border-white/5 bg-surface-container p-4 sm:p-6 lg:fixed lg:inset-y-0 lg:w-64 lg:border-b-0 lg:border-r">
-        <div className="mb-8 animate-pulse">
-          <div className="h-6 w-32 rounded-lg bg-white/10 mb-3" />
-          <div className="h-3 w-24 rounded-lg bg-white/5" />
-        </div>
-        <div className="space-y-2 animate-pulse">
-          {[1,2,3,4].map(i => <div key={i} className="h-12 rounded-xl bg-white/5" />)}
-        </div>
-      </aside>
-      <main className="flex-1 p-4 sm:p-6 lg:ml-64 lg:p-8">
-        <div className="mb-8 animate-pulse">
-          <div className="h-8 w-40 rounded-lg bg-white/10 mb-2" />
-          <div className="h-4 w-56 rounded-lg bg-white/5" />
-        </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 animate-pulse">
-          {[1,2,3,4].map(i => (
-            <div key={i} className="rounded-2xl bg-surface-container-low/60 border border-white/5 p-5">
-              <div className="h-3 w-16 rounded bg-white/10 mb-4" />
-              <div className="h-8 w-12 rounded bg-white/10" />
+  const [soundEnabled, setSoundEnabled] = useState(() => {
+    try {
+      return localStorage.getItem("gq_sound_enabled") !== "false";
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleSound = () => {
+    setSoundEnabled((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("gq_sound_enabled", String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  };
+
+  const handleCallNext = useCallback(async () => {
+    if (!storeId || queueEntries.length === 0) return;
+    try {
+      if (soundEnabled) playCallChime();
+      await callNext(storeId);
+      pushToast("Called next party in queue.", "success");
+    } catch (err) {
+      pushToast(err.message || "Could not call next customer.", "error");
+    }
+  }, [storeId, queueEntries.length, soundEnabled, pushToast]);
+
+  const handleCallSpecific = (entry) => {
+    if (soundEnabled) playCallChime();
+    pushToast(`Alerted ${entry.display_name || "Guest"} for counter entry.`, "info");
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (
+        e.code === "Space" &&
+        e.target.tagName !== "INPUT" &&
+        e.target.tagName !== "TEXTAREA" &&
+        !modalState &&
+        activeTab === "dashboard"
+      ) {
+        e.preventDefault();
+        handleCallNext();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [activeTab, modalState, handleCallNext]);
+
+  if (loading || fetchingStore) {
+    return (
+      <div className="min-h-screen bg-[#07070a] text-white flex flex-col items-center justify-center p-6 font-body">
+        <div className="relative mb-6">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-violet-600 to-cyan-500 p-0.5 animate-pulse">
+            <div className="w-full h-full bg-[#0e0e14] rounded-[14px] flex items-center justify-center">
+              <span className="material-symbols-outlined text-3xl text-violet-400">admin_panel_settings</span>
             </div>
-          ))}
+          </div>
         </div>
-        <div className="mt-6 space-y-3 animate-pulse">
-          {[1,2,3].map(i => (
-            <div key={i} className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-5">
-              <div className="flex items-center gap-4">
-                <div className="h-10 w-10 rounded-full bg-white/10" />
-                <div className="flex-1 space-y-2">
-                  <div className="h-4 w-1/3 rounded bg-white/10" />
-                  <div className="h-3 w-1/2 rounded bg-white/5" />
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </main>
-    </div>
-  );
+        <p className="text-sm font-semibold text-white tracking-wide">Syncing Store Cloud State...</p>
+        <p className="text-xs text-white/40 mt-1 font-mono uppercase tracking-widest">Ghost Queue 2.0</p>
+      </div>
+    );
+  }
+
   if (!isAdmin) return <AdminLogin />;
+
   if (!storeId) {
     return (
-      <div className="min-h-screen bg-background text-white flex items-center justify-center p-8">
-        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-surface-container p-8 text-center">
-          <h2 className="text-2xl font-headline font-bold mb-3">No Store Access</h2>
-          <p className="text-sm text-on-surface-variant mb-6">
-            {adminUser?.email ? `No store is assigned to ${adminUser.email}.` : "No store is assigned to this account."}
+      <div className="min-h-screen bg-[#07070a] text-white flex items-center justify-center p-6 font-body">
+        <div className="w-full max-w-md rounded-3xl border border-white/10 bg-[#0e0e14]/90 backdrop-blur-2xl p-8 text-center shadow-2xl relative">
+          <div className="w-14 h-14 rounded-2xl bg-violet-500/10 border border-violet-500/20 mx-auto flex items-center justify-center mb-4">
+            <span className="material-symbols-outlined text-2xl text-violet-400">store</span>
+          </div>
+          <h2 className="text-2xl font-headline font-bold text-white mb-2">No Store Assigned</h2>
+          <p className="text-xs text-white/60 mb-6 leading-relaxed">
+            {adminUser?.email
+              ? `Account (${adminUser.email}) does not own or staff an active store queue yet.`
+              : "No venue is currently associated with this login."}
           </p>
-          <div className="flex gap-3 justify-center">
-            <button onClick={() => { window.location.href = "/register"; }} className="rounded-xl bg-gradient-to-r from-primary-container to-secondary px-5 py-3 font-headline font-bold text-white">
-              Create Store
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <button
+              onClick={() => { window.location.href = "/register"; }}
+              className="px-5 py-3 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-semibold text-xs uppercase tracking-wider shadow-lg shadow-violet-600/30 transition-all cursor-pointer"
+            >
+              Provision Store
             </button>
-            <button onClick={() => signOut(auth)} className="rounded-xl border border-white/10 px-5 py-3">
+            <button
+              onClick={() => signOut(auth)}
+              className="px-5 py-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer"
+            >
               Sign out
             </button>
           </div>
@@ -796,345 +834,1196 @@ export default function AdminDashboard({ adminUser }) {
     );
   }
 
-  const tabs = ownerView ? ["dashboard", "history", "settings", "audit"] : ["dashboard", "history", "audit"];
+  const tabs = ownerView
+    ? [
+        { id: "dashboard", label: "Live Radar", icon: "radar" },
+        { id: "history", label: "Queue History", icon: "history" },
+        { id: "settings", label: "Settings", icon: "settings" },
+        { id: "audit", label: "Audit Trail", icon: "security" },
+      ]
+    : [
+        { id: "dashboard", label: "Live Radar", icon: "radar" },
+        { id: "history", label: "Queue History", icon: "history" },
+        { id: "audit", label: "Audit Trail", icon: "security" },
+      ];
+
+  const healthScore = computeQueueHealthScore({
+    meta: storeMeta,
+    entries: queueEntries,
+    recentHistory: filteredHistory,
+    targetMaxWaitMins: 20,
+  });
 
   return (
-    <div className="min-h-screen bg-background text-on-background lg:flex">
-      <aside className="w-full border-b border-white/5 bg-surface-container p-4 sm:p-6 lg:fixed lg:inset-y-0 lg:w-64 lg:border-b-0 lg:border-r">
-        <div className="mb-8">
-          <h1 className="text-xl font-headline font-bold text-primary">Ghost Queue</h1>
-          <p className="text-xs uppercase tracking-widest text-on-surface-variant mt-2">{storeName}</p>
-          <p className="text-[10px] uppercase tracking-widest text-secondary mt-2">{accessRole}</p>
-        </div>
-        <div className="flex gap-2 overflow-x-auto pb-2 lg:flex-1 lg:flex-col lg:space-y-2 lg:overflow-visible lg:pb-0">
-          {tabs.map((tab) => (
-            <button key={tab} onClick={() => setActiveTab(tab)} className={`whitespace-nowrap rounded-xl px-4 py-3 text-left capitalize lg:w-full ${activeTab === tab ? "bg-surface-container-high text-primary" : "text-on-surface-variant hover:bg-white/5"}`}>{tab}</button>
-          ))}
-        </div>
-        <button onClick={() => signOut(auth)} className="mt-4 w-full rounded-xl border border-white/10 px-4 py-3 text-sm lg:mt-0">Sign out</button>
-      </aside>
+    <div className="min-h-screen bg-[#07070a] text-white font-body selection:bg-violet-500/30 relative">
+      {/* Background ambient lighting */}
+      <div className="pointer-events-none fixed -top-40 left-1/4 w-[600px] h-[350px] bg-violet-600/10 blur-[140px] rounded-full" />
+      <div className="pointer-events-none fixed bottom-10 right-10 w-[500px] h-[400px] bg-cyan-500/10 blur-[150px] rounded-full" />
+      <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(#ffffff08_1px,transparent_1px)] [background-size:24px_24px] opacity-30" />
 
-      <main className="flex-1 p-4 sm:p-6 lg:ml-64 lg:p-8">
-        <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-2xl font-headline font-bold">Admin Panel</h2>
-            <p className="text-sm text-on-surface-variant mt-1">{storeStatus.label} · {storeStatus.reason}</p>
-          </div>
-          <button onClick={handleToggle} disabled={!canManageStore} className="w-full rounded-full border border-white/10 px-5 py-3 text-sm font-bold disabled:opacity-50 sm:w-auto">{storeStatus.isOpen ? "Close Store" : "Open Store"}</button>
-        </div>
-
-        {activeTab === "dashboard" && (
-          <div className="space-y-8">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-2xl bg-surface-container-low/60 border border-white/5 p-5"><p className="text-[10px] uppercase tracking-widest text-on-surface-variant">In queue</p><p className="text-3xl font-headline font-bold mt-2">{totalInQueue}</p></div>
-              <div className="rounded-2xl bg-surface-container-low/60 border border-white/5 p-5"><p className="text-[10px] uppercase tracking-widest text-on-surface-variant">Live pace</p><p className="text-3xl font-headline font-bold mt-2">{avgServiceMins}m</p></div>
-              <div className="rounded-2xl bg-surface-container-low/60 border border-white/5 p-5"><p className="text-[10px] uppercase tracking-widest text-on-surface-variant">Served</p><p className="text-3xl font-headline font-bold mt-2">{stats.served}</p></div>
-              <div className="rounded-2xl bg-surface-container-low/60 border border-white/5 p-5"><p className="text-[10px] uppercase tracking-widest text-on-surface-variant">Dropout</p><p className="text-3xl font-headline font-bold mt-2">{filteredHistory.length ? Math.round(((stats.left + stats.noShow + stats.stale) / filteredHistory.length) * 100) : 0}%</p></div>
+      {/* Top Floating Glass Header */}
+      <header className="sticky top-0 z-40 bg-[#07070a]/85 backdrop-blur-xl border-b border-white/10 px-4 sm:px-6 py-3.5">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-4">
+          
+          {/* Store Brand & Role */}
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 to-indigo-600 p-0.5 shadow-md flex items-center justify-center shrink-0">
+              <div className="w-full h-full bg-[#0e0e14] rounded-[10px] flex items-center justify-center">
+                <span className="material-symbols-outlined text-lg text-violet-400">
+                  {storeMeta?.store_logo || "storefront"}
+                </span>
+              </div>
             </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="text-base font-bold font-headline text-white truncate">{storeName}</h1>
+                <span className="px-2 py-0.5 rounded-full bg-violet-500/15 border border-violet-500/30 text-violet-300 text-[10px] font-mono uppercase tracking-wider">
+                  {accessRole}
+                </span>
+              </div>
+              <p className="text-[11px] text-white/50 truncate flex items-center gap-1.5">
+                <span className={`w-1.5 h-1.5 rounded-full ${storeStatus.isOpen ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`} />
+                <span>{storeStatus.label}</span>
+                <span className="text-white/30">•</span>
+                <span className="text-white/40">{storeMeta?.category || "Service Queue"}</span>
+              </p>
+            </div>
+          </div>
 
-            {(storeMeta?.queue_paused || storeMeta?.join_disabled || Number(storeMeta?.max_queue_size ?? 0) > 0) && (
-              <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-5">
-                <div className="flex flex-wrap gap-3 text-xs uppercase tracking-[0.16em] text-on-surface-variant">
-                  {storeMeta?.queue_paused && <span className="rounded-full bg-secondary/10 px-3 py-2 text-secondary">Queue paused</span>}
-                  {storeMeta?.join_disabled && <span className="rounded-full bg-error/10 px-3 py-2 text-error">Joins disabled</span>}
-                  {Number(storeMeta?.max_queue_size ?? 0) > 0 && (
-                    <span className="rounded-full bg-surface-container-high px-3 py-2">
-                      Capacity {totalInQueue}/{Number(storeMeta.max_queue_size)}
+          {/* Navigation Tabs */}
+          <div className="flex items-center gap-1 p-1 rounded-xl bg-white/[0.04] border border-white/10 overflow-x-auto">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                    isActive
+                      ? "bg-violet-600 text-white shadow-md shadow-violet-600/30"
+                      : "text-white/60 hover:text-white hover:bg-white/5"
+                  }`}
+                >
+                  <span className="material-symbols-outlined text-sm">{tab.icon}</span>
+                  <span>{tab.label}</span>
+                  {tab.id === "dashboard" && totalInQueue > 0 && (
+                    <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-white text-[10px] font-mono">
+                      {totalInQueue}
                     </span>
                   )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Controls: Sound, Status Switch, TV Signage, Logout */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Sound toggle */}
+            <button
+              onClick={toggleSound}
+              className={`p-2 rounded-xl border text-xs transition-all flex items-center justify-center cursor-pointer ${
+                soundEnabled
+                  ? "bg-violet-500/15 border-violet-500/30 text-violet-300 hover:bg-violet-500/25"
+                  : "bg-white/5 border-white/10 text-white/40 hover:text-white/70"
+              }`}
+              title={soundEnabled ? "Sound Chimes Active (Click to mute)" : "Chimes Muted (Click to enable)"}
+            >
+              <span className="material-symbols-outlined text-base">
+                {soundEnabled ? "volume_up" : "volume_off"}
+              </span>
+            </button>
+
+            {/* TV Signage Link */}
+            <a
+              href={`/signage/${storeId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white text-xs font-semibold transition-all"
+              title="Open full-screen TV display for waiting room"
+            >
+              <span className="material-symbols-outlined text-sm">tv</span>
+              <span className="hidden sm:inline">Signage</span>
+            </a>
+
+            {/* Open / Close store toggle */}
+            <button
+              onClick={handleToggle}
+              disabled={!canManageStore}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl border text-xs font-semibold uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer ${
+                storeStatus.isOpen
+                  ? "bg-red-500/15 border-red-500/30 text-red-300 hover:bg-red-500/25"
+                  : "bg-emerald-500/15 border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/25"
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${storeStatus.isOpen ? "bg-red-400" : "bg-emerald-400 animate-pulse"}`} />
+              <span>{storeStatus.isOpen ? "Close Store" : "Open Store"}</span>
+            </button>
+
+            {/* Sign Out */}
+            <button
+              onClick={() => signOut(auth)}
+              className="p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/50 hover:text-white text-xs transition-all cursor-pointer"
+              title="Sign Out"
+            >
+              <span className="material-symbols-outlined text-base">logout</span>
+            </button>
+          </div>
+
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="max-w-7xl mx-auto p-4 sm:p-6 lg:p-8 relative z-10">
+        
+        {/* DASHBOARD TAB */}
+        {activeTab === "dashboard" && (
+          <div className="space-y-6">
+            
+            {/* Quick Action Top Bar */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-4 rounded-2xl bg-[#0e0e14]/90 border border-white/10 shadow-lg">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleCallNext}
+                  disabled={queueEntries.length === 0}
+                  className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:opacity-95 text-white font-headline font-bold text-sm tracking-wide shadow-lg shadow-violet-600/30 transition-all active:scale-[0.98] disabled:opacity-40 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-lg">campaign</span>
+                  <span>CALL NEXT CUSTOMER</span>
+                  <span className="hidden md:inline-block px-1.5 py-0.5 rounded bg-black/30 text-[10px] font-mono text-white/80">
+                    Space
+                  </span>
+                </button>
+
+                {queueEntries.length > 0 && (
+                  <div className="hidden lg:block text-xs text-white/60">
+                    <span>Up next: </span>
+                    <strong className="text-white font-semibold">{queueEntries[0]?.display_name || "Guest"}</strong>
+                    <span className="text-white/40"> ({queueEntries[0]?.member_count || 1} pax)</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => { setDraft(draftFromEntry()); setModalState({ type: "create" }); }}
+                  className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold tracking-wide transition-all cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm text-cyan-400">person_add</span>
+                  <span>Add Walk-In</span>
+                </button>
+
+                <button
+                  onClick={handleDownloadPoster}
+                  className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold tracking-wide transition-all cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm text-violet-400">print</span>
+                  <span>QR Poster</span>
+                </button>
+
+                <button
+                  onClick={handlePrintQueue}
+                  className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold tracking-wide transition-all cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm text-emerald-400">description</span>
+                  <span>Queue Sheet</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 4 KPI Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 relative overflow-hidden group hover:border-violet-500/30 transition-colors">
+                <div className="flex items-center justify-between text-xs text-white/50 uppercase tracking-wider font-mono">
+                  <span>In Queue</span>
+                  <span className="w-2 h-2 rounded-full bg-violet-400 animate-pulse" />
                 </div>
-                <p className="mt-3 text-sm text-on-surface-variant">
-                  {storeMeta?.paused_reason || storeMeta?.join_disabled_reason || "Customer join state is being controlled from Store Settings."}
+                <div className="flex items-baseline gap-2 mt-2">
+                  <span className="text-3xl sm:text-4xl font-headline font-bold text-white">{totalInQueue}</span>
+                  <span className="text-xs text-white/40 font-mono">
+                    {Number(storeMeta?.max_queue_size ?? 0) > 0 ? `/ ${storeMeta.max_queue_size} cap` : "parties"}
+                  </span>
+                </div>
+                <p className="text-[11px] text-white/40 mt-1">Real-time waiting parties</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 relative overflow-hidden group hover:border-cyan-500/30 transition-colors">
+                <div className="flex items-center justify-between text-xs text-white/50 uppercase tracking-wider font-mono">
+                  <span>Live Pace</span>
+                  <span className="material-symbols-outlined text-cyan-400 text-sm">speed</span>
+                </div>
+                <div className="flex items-baseline gap-2 mt-2">
+                  <span className="text-3xl sm:text-4xl font-headline font-bold text-cyan-300">{avgServiceMins}m</span>
+                  <span className="text-xs text-white/40 font-mono">/ party</span>
+                </div>
+                <p className="text-[11px] text-white/40 mt-1">Rolling service speed</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 relative overflow-hidden group hover:border-emerald-500/30 transition-colors">
+                <div className="flex items-center justify-between text-xs text-white/50 uppercase tracking-wider font-mono">
+                  <span>Served Today</span>
+                  <span className="material-symbols-outlined text-emerald-400 text-sm">check_circle</span>
+                </div>
+                <div className="flex items-baseline gap-2 mt-2">
+                  <span className="text-3xl sm:text-4xl font-headline font-bold text-white">{stats.served}</span>
+                  <span className="text-xs text-emerald-400 font-mono">completed</span>
+                </div>
+                <p className="text-[11px] text-white/40 mt-1">Customer turns serviced</p>
+              </div>
+
+              <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 relative overflow-hidden group hover:border-amber-500/30 transition-colors">
+                <div className="flex items-center justify-between text-xs text-white/50 uppercase tracking-wider font-mono">
+                  <span>Health Score</span>
+                  <span className={`material-symbols-outlined text-sm ${getHealthColor(healthScore.level)}`}>
+                    {getHealthIcon(healthScore.level)}
+                  </span>
+                </div>
+                <div className="flex items-baseline gap-2 mt-2">
+                  <span className="text-3xl sm:text-4xl font-headline font-bold text-white">{healthScore.score}</span>
+                  <span className="text-xs text-white/40 font-mono">/ 100</span>
+                </div>
+                <p className="text-[11px] text-white/40 mt-1">
+                  {filteredHistory.length ? Math.round(((stats.left + stats.noShow + stats.stale) / filteredHistory.length) * 100) : 0}% dropout rate
                 </p>
+              </div>
+            </div>
+
+            {/* Operational Warning & Controls Banner */}
+            {(storeMeta?.queue_paused || storeMeta?.join_disabled || Number(storeMeta?.max_queue_size ?? 0) > 0) && (
+              <div className="p-4 rounded-2xl bg-amber-500/10 border border-amber-500/25 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <span className="material-symbols-outlined text-amber-400 text-xl">info</span>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      {storeMeta?.queue_paused && (
+                        <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold uppercase tracking-wider">
+                          Queue Paused
+                        </span>
+                      )}
+                      {storeMeta?.join_disabled && (
+                        <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 text-[10px] font-bold uppercase tracking-wider">
+                          Joins Blocked
+                        </span>
+                      )}
+                      {Number(storeMeta?.max_queue_size ?? 0) > 0 && (
+                        <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/80 text-[10px] font-bold uppercase tracking-wider">
+                          Cap {totalInQueue}/{storeMeta.max_queue_size}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-amber-200/80 mt-1">
+                      {storeMeta?.paused_reason || storeMeta?.join_disabled_reason || "Queue constraints active."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    onClick={() => handleQuickSetting({ queue_paused: !storeMeta?.queue_paused }, storeMeta?.queue_paused ? "Queue resumed." : "Queue paused.")}
+                    disabled={!canManageStore}
+                    className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    {storeMeta?.queue_paused ? "Resume Queue" : "Pause Queue"}
+                  </button>
+                  <button
+                    onClick={() => handleQuickSetting({ join_disabled: !storeMeta?.join_disabled }, storeMeta?.join_disabled ? "New joins enabled." : "New joins disabled.")}
+                    disabled={!canManageStore}
+                    className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-semibold uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    {storeMeta?.join_disabled ? "Enable Joins" : "Disable Joins"}
+                  </button>
+                  <button
+                    onClick={() => handleQuickSetting({ max_queue_size: totalInQueue + 5 }, `Capacity expanded to ${totalInQueue + 5}.`)}
+                    disabled={!canManageStore}
+                    className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-xs font-semibold uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    Cap +5
+                  </button>
+                </div>
               </div>
             )}
 
-            <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-5">
-              <div className="flex flex-wrap gap-3">
-                <button onClick={() => handleQuickSetting({ queue_paused: !storeMeta?.queue_paused }, storeMeta?.queue_paused ? "Queue resumed." : "Queue paused.")} disabled={!canManageStore} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest disabled:opacity-50">
-                  {storeMeta?.queue_paused ? "Resume queue" : "Pause queue"}
-                </button>
-                <button onClick={() => handleQuickSetting({ join_disabled: !storeMeta?.join_disabled }, storeMeta?.join_disabled ? "New joins enabled." : "New joins disabled.")} disabled={!canManageStore} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest disabled:opacity-50">
-                  {storeMeta?.join_disabled ? "Enable joins" : "Disable joins"}
-                </button>
-                <button onClick={() => handleQuickSetting({ max_queue_size: totalInQueue + 5 }, `Queue capacity set to ${totalInQueue + 5}.`)} disabled={!canManageStore} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest disabled:opacity-50">
-                  Capacity +5
-                </button>
-                <button onClick={handlePrintQueue} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest">
-                  Print queue
-                </button>
-                <button onClick={handlePrintSummary} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest">
-                  Print summary
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-8 xl:grid-cols-[1fr_320px]">
+            {/* Main 2-Column Section */}
+            <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-6 items-start">
+              
+              {/* Left Column: Live Queue List */}
               <div className="space-y-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <h3 className="text-lg font-headline font-bold">Live Queue</h3>
-                  <button onClick={() => { setDraft(draftFromEntry()); setModalState({ type: "create" }); }} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest">Add Walk-in</button>
+                
+                {/* Search & Header */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-headline font-bold text-white">Live Customer Queue</h2>
+                    <span className="px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-300 text-xs font-mono font-bold">
+                      {filteredQueueEntries.length} Active
+                    </span>
+                  </div>
+
+                  <div className="relative w-full sm:w-72">
+                    <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-white/40 text-sm">search</span>
+                    <input
+                      type="text"
+                      value={queueSearch}
+                      onChange={(e) => setQueueSearch(e.target.value)}
+                      placeholder="Search name, phone, note, counter..."
+                      className="w-full bg-[#12121c] border border-white/10 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder:text-white/40 focus:border-violet-500 focus:outline-none transition-colors"
+                    />
+                    {queueSearch && (
+                      <button
+                        onClick={() => setQueueSearch("")}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/40 hover:text-white text-xs"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <input
-                  value={queueSearch}
-                  onChange={(event) => setQueueSearch(event.target.value)}
-                  placeholder="Search live queue by name, phone, note, counter..."
-                  className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none"
-                />
-                <div className="space-y-3">
-                  {filteredQueueEntries.length === 0 ? (
-                    <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-on-surface-variant">{queueEntries.length === 0 ? "Queue is empty" : "No live entries match this search."}</div>
-                  ) : filteredQueueEntries.map((entry, index) => (
-                    <div key={entry.id} className="rounded-2xl border border-white/5 bg-surface-container-low/50 p-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="flex gap-4">
-                          <div className="text-xl font-headline font-bold text-on-surface-variant">{String(index + 1).padStart(2, "0")}</div>
-                          <div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-bold">{entry.display_name || "Guest"}</p>
-                              {Number(entry.priority_level ?? 0) > 0 && <span className="rounded bg-secondary/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-secondary">Priority</span>}
-                              {entry.source === "walk_in" && <span className="rounded bg-primary/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-primary">Walk-in</span>}
-                              {entry.running_late && <span className="rounded bg-amber-500/10 px-2 py-0.5 text-[10px] uppercase tracking-wider text-amber-500 flex items-center gap-1"><span className="material-symbols-outlined text-[12px]">timer</span>Running Late</span>}
-                              {entry.service_counter && <span className="rounded bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-on-surface-variant">{entry.service_counter}</span>}
+
+                {/* Queue Entry Cards */}
+                {filteredQueueEntries.length === 0 ? (
+                  <div className="p-12 rounded-3xl border border-dashed border-white/10 bg-[#0e0e14]/50 text-center">
+                    <span className="material-symbols-outlined text-4xl text-white/20 mb-2">task_alt</span>
+                    <h3 className="text-sm font-semibold text-white/80">Queue is Clear</h3>
+                    <p className="text-xs text-white/40 mt-1 max-w-sm mx-auto">
+                      {queueEntries.length === 0
+                        ? "No parties currently waiting. Customers can scan the QR code to join or staff can log walk-ins."
+                        : "No entries match your search query."}
+                    </p>
+                    {queueEntries.length === 0 && (
+                      <button
+                        onClick={() => { setDraft(draftFromEntry()); setModalState({ type: "create" }); }}
+                        className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-violet-600/30 hover:bg-violet-600/50 border border-violet-500/30 text-violet-200 text-xs font-semibold transition-all cursor-pointer"
+                      >
+                        <span className="material-symbols-outlined text-sm">person_add</span>
+                        <span>Log First Walk-In</span>
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filteredQueueEntries.map((entry, index) => {
+                      const isNext = index === 0;
+                      return (
+                        <div
+                          key={entry.id}
+                          className={`p-4 rounded-2xl border transition-all ${
+                            isNext
+                              ? "bg-[#141422] border-violet-500/40 shadow-[0_0_30px_rgba(124,58,237,0.15)]"
+                              : "bg-[#0e0e14]/90 border-white/10 hover:border-white/20"
+                          }`}
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            
+                            {/* Left details */}
+                            <div className="flex items-start gap-3.5">
+                              {/* Position badge */}
+                              <div
+                                className={`w-11 h-11 rounded-xl flex items-center justify-center font-headline font-bold text-sm shrink-0 ${
+                                  isNext
+                                    ? "bg-gradient-to-tr from-violet-600 to-cyan-500 text-white shadow-md shadow-violet-600/30"
+                                    : "bg-white/5 border border-white/10 text-white/70"
+                                }`}
+                              >
+                                #{String(index + 1).padStart(2, "0")}
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <h4 className="font-bold text-sm text-white truncate">
+                                    {entry.display_name || "Guest Customer"}
+                                  </h4>
+
+                                  {isNext && (
+                                    <span className="px-2 py-0.5 rounded-full bg-violet-500/20 border border-violet-500/40 text-violet-300 text-[10px] font-bold uppercase tracking-wider">
+                                      Next Up
+                                    </span>
+                                  )}
+
+                                  {Number(entry.priority_level ?? 0) > 0 && (
+                                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold uppercase tracking-wider">
+                                      Priority
+                                    </span>
+                                  )}
+
+                                  {entry.source === "walk_in" && (
+                                    <span className="px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 text-[10px] font-bold uppercase tracking-wider">
+                                      Walk-In
+                                    </span>
+                                  )}
+
+                                  {entry.running_late && (
+                                    <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1">
+                                      <span className="material-symbols-outlined text-xs">timer</span>
+                                      Running Late
+                                    </span>
+                                  )}
+
+                                  {entry.service_counter && (
+                                    <span className="px-2 py-0.5 rounded-full bg-white/10 text-white/80 text-[10px] font-mono">
+                                      Counter: {entry.service_counter}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-2 text-xs text-white/50 mt-1">
+                                  <span>{entry.phone_number || "No phone"}</span>
+                                  <span>•</span>
+                                  <span>{entry.member_count || 1} guest{(entry.member_count || 1) > 1 ? "s" : ""}</span>
+                                  <span>•</span>
+                                  <span>Joined {formatTime(entry.joined_at)}</span>
+                                </div>
+
+                                {entry.party_note && (
+                                  <p className="text-xs text-white/70 bg-white/[0.03] border border-white/5 rounded-lg px-2.5 py-1 mt-2">
+                                    <span className="text-violet-400 font-semibold">Note: </span>
+                                    {entry.party_note}
+                                  </p>
+                                )}
+
+                                {entry.staff_note && (
+                                  <p className="text-xs text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 rounded-lg px-2.5 py-1 mt-1">
+                                    <span className="font-semibold">Staff note: </span>
+                                    {entry.staff_note}
+                                  </p>
+                                )}
+                              </div>
                             </div>
-                            <p className="text-xs text-on-surface-variant mt-1">{entry.phone_number} • {entry.member_count} members • Joined {formatTime(entry.joined_at)}</p>
-                            {entry.party_note && <p className="text-xs text-on-surface-variant mt-2">Party note: {entry.party_note}</p>}
-                            {entry.staff_note && <p className="text-xs text-secondary mt-1">Staff note: {entry.staff_note}</p>}
+
+                            {/* Right Action Buttons */}
+                            <div className="flex flex-wrap items-center gap-1.5 sm:self-center shrink-0">
+                              <button
+                                onClick={() => handleCallSpecific(entry)}
+                                className="px-3 py-1.5 rounded-lg bg-violet-600/20 hover:bg-violet-600/40 border border-violet-500/30 text-violet-300 text-[11px] font-semibold uppercase tracking-wider transition-all flex items-center gap-1 cursor-pointer"
+                                title="Play call chime"
+                              >
+                                <span className="material-symbols-outlined text-sm">volume_up</span>
+                                <span>Call</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleMarkVIP(entry.id)}
+                                className="px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/25 border border-amber-500/20 text-amber-300 text-[11px] font-semibold uppercase tracking-wider transition-all cursor-pointer"
+                                title="Promote to front VIP"
+                              >
+                                VIP
+                              </button>
+
+                              <button
+                                onClick={() => handleReServeEntry(entry.id)}
+                                className="px-2.5 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/25 border border-cyan-500/20 text-cyan-300 text-[11px] font-semibold uppercase tracking-wider transition-all cursor-pointer"
+                                title="Recall customer for re-service"
+                              >
+                                Recall
+                              </button>
+
+                              <button
+                                onClick={() => { setDraft(draftFromEntry(entry)); setModalState({ type: "edit", entry }); }}
+                                className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white text-[11px] font-semibold uppercase tracking-wider transition-all cursor-pointer"
+                                title="Edit party details"
+                              >
+                                Edit
+                              </button>
+
+                              <button
+                                onClick={() => skipEntryForward(storeId, entry.id).then(() => pushToast("Moved back 1 spot.", "success")).catch((err) => pushToast(err.message, "error"))}
+                                className="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white text-[11px] font-semibold uppercase tracking-wider transition-all cursor-pointer"
+                                title="Skip 1 position back"
+                              >
+                                Skip
+                              </button>
+
+                              <button
+                                onClick={() => markNoShow(storeId, entry.id).then(() => pushToast("Marked as no-show.", "success")).catch((err) => pushToast(err.message, "error"))}
+                                className="px-2.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-[11px] font-semibold uppercase tracking-wider transition-all cursor-pointer"
+                                title="Mark as absent / no-show"
+                              >
+                                No-Show
+                              </button>
+                            </div>
+
                           </div>
                         </div>
-                        <div className="flex flex-wrap gap-2 mt-3 sm:mt-0 justify-end sm:min-w-[220px]">
-                          <button aria-label="Edit entry" onClick={() => { setDraft(draftFromEntry(entry)); setModalState({ type: "edit", entry }); }} className="rounded-lg bg-surface-container-high px-3 py-2 text-[10px] uppercase tracking-widest font-bold">Edit</button>
-                          <button aria-label="Grant VIP status" onClick={() => handleMarkVIP(entry.id)} className="rounded-lg bg-tertiary/10 text-tertiary px-3 py-2 text-[10px] uppercase tracking-widest font-bold hover:bg-tertiary/20">VIP</button>
-                          <button aria-label="Re-serve customer" onClick={() => handleReServeEntry(entry.id)} className="rounded-lg bg-surface-container-high px-3 py-2 text-[10px] uppercase tracking-widest font-bold">Re-serve</button>
-                          <button aria-label="Skip entry one position back" onClick={() => skipEntryForward(storeId, entry.id).then(() => pushToast("Entry moved back by one spot.", "success")).catch((err) => pushToast(err.message || "Could not skip entry.", "error"))} className="rounded-lg bg-surface-container-high px-3 py-2 text-[10px] uppercase tracking-widest font-bold">Skip</button>
-                          <button aria-label="Mark as no-show" onClick={() => markNoShow(storeId, entry.id).then(() => pushToast("Marked as no-show.", "success")).catch((err) => pushToast(err.message || "Could not mark no-show.", "error"))} className="rounded-lg bg-error/10 px-3 py-2 text-[10px] uppercase tracking-widest font-bold text-error">No-show</button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <button onClick={() => callNext(storeId).then(() => pushToast("Next customer called.", "success")).catch((err) => pushToast(err.message || "Could not call next customer.", "error"))} disabled={queueEntries.length === 0} className="w-full rounded-xl bg-gradient-to-r from-primary-container to-secondary py-4 font-headline font-bold text-white disabled:opacity-50">CALL NEXT CUSTOMER</button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
+              {/* Right Column: Operator Widgets */}
               <div className="space-y-6">
-                {(function() {
-                  const health = computeQueueHealthScore({ meta: storeMeta, entries: queueEntries, recentHistory: filteredHistory, targetMaxWaitMins: 20 });
-                  return (
-                    <div className={`rounded-2xl border ${getHealthBgColor(health.level)} p-6`}>
-                      <div className="flex items-center gap-3 mb-3">
-                        <span className={`material-symbols-outlined text-[28px] ${getHealthColor(health.level)}`}>{getHealthIcon(health.level)}</span>
-                        <div>
-                           <p className="text-[10px] uppercase tracking-widest text-on-surface-variant font-label">Queue Health</p>
-                           <h3 className="font-headline font-bold text-2xl">{health.score}/100</h3>
-                        </div>
-                      </div>
-                      <div className="flex gap-2 flex-wrap mt-4">
-                        {health.factors.map((f, i) => <span key={i} className={`text-[10px] uppercase tracking-[0.1em] font-bold px-2.5 py-1 rounded border border-white/5 bg-surface-container ${f.severity === "critical" ? "text-red-400" : f.severity === "warning" ? "text-amber-400" : "text-white/60"}`}>{f.label}</span>)}
-                      </div>
+                
+                {/* Queue Health Card */}
+                <div className={`p-5 rounded-2xl border ${getHealthBgColor(healthScore.level)}`}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className={`material-symbols-outlined text-xl ${getHealthColor(healthScore.level)}`}>
+                        {getHealthIcon(healthScore.level)}
+                      </span>
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-white">Queue Health</h3>
                     </div>
-                  );
-                })()}
+                    <span className="text-lg font-headline font-bold text-white">{healthScore.score}/100</span>
+                  </div>
 
-                <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6">
-                  <h3 className="text-[10px] uppercase tracking-widest text-on-surface-variant mb-4">Live Broadcast</h3>
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {healthScore.factors.map((f, i) => (
+                      <span
+                        key={i}
+                        className={`text-[10px] font-mono px-2 py-0.5 rounded border ${
+                          f.severity === "critical"
+                            ? "bg-red-500/10 border-red-500/30 text-red-300"
+                            : f.severity === "warning"
+                            ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
+                            : "bg-white/5 border-white/10 text-white/60"
+                        }`}
+                      >
+                        {f.label}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Live Broadcast Card */}
+                <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 shadow-lg">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="material-symbols-outlined text-amber-400 text-lg">campaign</span>
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-white">Broadcast Message</h3>
+                    </div>
+                    {storeMeta?.current_broadcast?.message && (
+                      <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                    )}
+                  </div>
+
                   {storeMeta?.current_broadcast?.message ? (
-                     <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 p-4">
-                       <div className="flex items-center gap-2 mb-2"><span className="material-symbols-outlined text-amber-400 text-sm">campaign</span><p className="text-xs uppercase text-amber-400 tracking-wider font-bold">Broadcasting</p></div>
-                       <p className="text-sm text-on-surface mb-4">{storeMeta.current_broadcast.message}</p>
-                       <button onClick={handleClearBroadcast} className="w-full rounded-lg bg-surface-container px-4 py-2.5 text-[10px] text-on-surface hover:text-error transition-colors font-bold uppercase tracking-widest">End Broadcast</button>
-                     </div>
+                    <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                      <p className="text-xs text-amber-200 leading-relaxed">{storeMeta.current_broadcast.message}</p>
+                      <button
+                        onClick={handleClearBroadcast}
+                        className="mt-3 w-full py-2 rounded-lg bg-white/5 hover:bg-white/10 text-red-400 text-xs font-semibold uppercase tracking-wider transition-colors cursor-pointer"
+                      >
+                        End Broadcast
+                      </button>
+                    </div>
                   ) : (
-                     <div>
-                       <textarea id="broadcast-input" rows={2} placeholder="Message all waiting customers..." className="w-full resize-none rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none text-sm mb-3" />
-                       <button onClick={() => {
+                    <div>
+                      <textarea
+                        id="broadcast-input"
+                        rows={2}
+                        placeholder="Message displayed to all waiting customers..."
+                        className="w-full resize-none bg-[#12121c] border border-white/10 rounded-xl p-3 text-xs text-white placeholder:text-white/40 focus:border-violet-500 focus:outline-none transition-colors mb-2"
+                      />
+                      <div className="flex flex-wrap gap-1.5 mb-3">
+                        {["5m sanitation break", "Calling counter 1 & 2", "Kitchen in rush hour"].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => {
+                              const el = document.getElementById("broadcast-input");
+                              if (el) el.value = preset;
+                            }}
+                            className="px-2 py-0.5 rounded-md bg-white/5 hover:bg-white/10 text-[10px] text-white/50 hover:text-white transition-colors cursor-pointer"
+                          >
+                            + {preset}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => {
                           const el = document.getElementById("broadcast-input");
-                          if (el?.value) { handleSendBroadcast(el.value); el.value = ""; }
-                       }} className="w-full rounded-xl bg-tertiary/10 text-tertiary px-4 py-3 text-xs font-bold uppercase tracking-widest hover:bg-tertiary/20 transition-colors">Send Broadcast</button>
-                     </div>
+                          if (el?.value?.trim()) {
+                            handleSendBroadcast(el.value.trim());
+                            el.value = "";
+                          }
+                        }}
+                        className="w-full py-2.5 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-300 text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer"
+                      >
+                        Send Broadcast Alert
+                      </button>
+                    </div>
                   )}
                 </div>
 
-                <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6 text-center">
-                  <h3 className="text-[10px] uppercase tracking-widest text-on-surface-variant mb-4">Store QR</h3>
-                  <div className="inline-block rounded-xl bg-white p-2"><canvas ref={canvasRef}></canvas></div>
-                  <p className="mt-4 rounded-lg bg-surface-container px-3 py-2 text-[11px] text-on-surface-variant break-all">{window.location.host}/q/{storeId}</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const url = `${window.location.origin}/q/${storeId}`;
-                      if (navigator.clipboard?.writeText) {
-                        navigator.clipboard.writeText(url).then(() => pushToast("Store link copied!", "success"));
-                      } else {
-                        window.prompt("Copy store link:", url);
-                      }
-                    }}
-                    className="mt-3 w-full rounded-xl bg-surface-container-high px-4 py-2 text-xs uppercase tracking-widest hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
-                  >
-                    <span className="material-symbols-outlined text-sm">link</span>
-                    Copy store link
-                  </button>
-                  <button onClick={handleDownloadPoster} className="mt-3 w-full rounded-xl bg-gradient-to-r from-primary-container to-secondary px-4 py-2 text-xs uppercase tracking-widest text-white transition-colors flex items-center justify-center gap-2">
-                    <span className="material-symbols-outlined text-sm">print</span>
-                    Print QR Poster
-                  </button>
-                </div>
-                <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6">
-                  <div className="flex items-center justify-between mb-4"><h3 className="text-[10px] uppercase tracking-widest text-on-surface-variant">Peak hours</h3><span className="text-[10px] text-tertiary">History based</span></div>
-                  <div className="flex items-end h-32 gap-2 border-b border-white/5 pb-2">
-                    {peakHours.map((bucket) => <div key={bucket.label} className="flex-1 flex flex-col items-center gap-2"><div className={`w-full rounded-t-sm ${bucket.count ? "bg-secondary" : "bg-surface-variant/50"}`} style={{ height: bucket.height }}></div><span className="text-[9px] text-on-surface-variant">{bucket.label}</span></div>)}
+                {/* QR Code & Poster Card */}
+                <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 text-center shadow-lg">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-white/60 mb-3">Store QR & Link</h3>
+                  <div className="inline-block p-2 rounded-xl bg-white shadow-md">
+                    <canvas ref={canvasRef} />
                   </div>
-                  <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="rounded-xl bg-surface-container px-3 py-3"><p className="text-[10px] uppercase tracking-widest text-on-surface-variant">Avg wait</p><p className="mt-1 font-bold">{stats.avgWait} min</p></div>
-                    <div className="rounded-xl bg-surface-container px-3 py-3"><p className="text-[10px] uppercase tracking-widest text-on-surface-variant">Left / stale</p><p className="mt-1 font-bold">{stats.left + stats.noShow + stats.stale}</p></div>
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6">
-                  <h3 className="text-[10px] uppercase tracking-widest text-on-surface-variant mb-4">Busiest days</h3>
-                  <div className="space-y-3">
-                    {busiestDays.length === 0 ? <p className="text-sm text-on-surface-variant">Need more history to chart busy days.</p> : busiestDays.map((item) => <div key={item.label} className="flex items-center justify-between rounded-xl bg-surface-container px-3 py-3"><span className="text-sm">{item.label}</span><span className="font-bold">{item.count}</span></div>)}
+                  <p className="mt-3 text-[11px] font-mono text-white/40 break-all bg-white/[0.02] p-2 rounded-lg border border-white/5">
+                    {window.location.host}/q/{storeId}
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 mt-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const url = `${window.location.origin}/q/${storeId}`;
+                        if (navigator.clipboard?.writeText) {
+                          navigator.clipboard.writeText(url).then(() => pushToast("Store URL copied!", "success"));
+                        } else {
+                          window.prompt("Store URL:", url);
+                        }
+                      }}
+                      className="py-2 px-3 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-white/80 hover:text-white transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      <span className="material-symbols-outlined text-sm">content_copy</span>
+                      <span>Copy</span>
+                    </button>
+                    <button
+                      onClick={handleDownloadPoster}
+                      className="py-2 px-3 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:opacity-95 text-xs font-semibold text-white transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      <span className="material-symbols-outlined text-sm">print</span>
+                      <span>Print</span>
+                    </button>
                   </div>
                 </div>
-                <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6">
-                  <h3 className="text-[10px] uppercase tracking-widest text-on-surface-variant mb-4">Common note</h3>
-                  {topPartyNote ? (
-                    <div className="rounded-xl bg-surface-container px-4 py-4">
-                      <p className="font-semibold capitalize">{topPartyNote.label}</p>
-                      <p className="mt-1 text-xs text-on-surface-variant">{topPartyNote.count} recent entries</p>
+
+                {/* Peak Hours Histogram */}
+                <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 shadow-lg">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-white">Peak Hours Radar</h3>
+                    <span className="text-[10px] text-cyan-400 font-mono">Recent data</span>
+                  </div>
+                  <div className="flex items-end h-28 gap-1 border-b border-white/10 pb-2">
+                    {peakHours.map((bucket) => (
+                      <div key={bucket.label} className="flex-1 flex flex-col items-center gap-1.5">
+                        <div
+                          className={`w-full rounded-t-sm transition-all ${
+                            bucket.count > 0 ? "bg-gradient-to-t from-violet-600 to-cyan-400" : "bg-white/5"
+                          }`}
+                          style={{ height: bucket.height }}
+                          title={`${bucket.label}: ${bucket.count} visitors`}
+                        />
+                        <span className="text-[8px] font-mono text-white/30 truncate">{bucket.label.slice(0, 2)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Busiest Days */}
+                <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 shadow-lg">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-white mb-3">Busiest Days</h3>
+                  <div className="space-y-2">
+                    {busiestDays.length === 0 ? (
+                      <p className="text-xs text-white/40">Gathering historical sessions...</p>
+                    ) : (
+                      busiestDays.map((item) => (
+                        <div
+                          key={item.label}
+                          className="flex items-center justify-between p-2.5 rounded-xl bg-white/[0.03] border border-white/5 text-xs"
+                        >
+                          <span className="text-white/70">{item.label}</span>
+                          <span className="font-bold text-white font-mono">{item.count} parties</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Common Party Note */}
+                {topPartyNote && (
+                  <div className="p-5 rounded-2xl bg-[#0e0e14]/90 border border-white/10 shadow-lg">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-white mb-2">Frequent Special Request</h3>
+                    <div className="p-3 rounded-xl bg-white/[0.03] border border-white/5">
+                      <p className="text-xs font-bold text-violet-300 capitalize">{topPartyNote.label}</p>
+                      <p className="text-[11px] text-white/40 mt-0.5">{topPartyNote.count} recent guest requests</p>
                     </div>
-                  ) : (
-                    <p className="text-sm text-on-surface-variant">Need more note data to highlight a trend.</p>
-                  )}
-                </div>
+                  </div>
+                )}
+
               </div>
             </div>
+
           </div>
         )}
 
+        {/* HISTORY TAB */}
         {activeTab === "history" && (
           <div className="space-y-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div>
-                <h3 className="text-xl font-headline font-bold">History</h3>
-                <p className="text-sm text-on-surface-variant mt-1">Filter by name, phone, status, or date range.</p>
+                <h2 className="text-xl font-headline font-bold text-white">Queue Historical Archives</h2>
+                <p className="text-xs text-white/50 mt-1">Review past customer turnouts, dropout reasons, and export logs.</p>
               </div>
-              <div className="flex flex-wrap gap-3">
-                <button onClick={() => downloadCsv(filteredHistory, storeId)} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest">Export CSV</button>
-                <button onClick={() => downloadExcel(filteredHistory, storeId)} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest">Export Excel</button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => downloadCsv(filteredHistory, storeId)}
+                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold tracking-wider uppercase transition-all flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm">download</span>
+                  <span>Export CSV</span>
+                </button>
+                <button
+                  onClick={() => downloadExcel(filteredHistory, storeId)}
+                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold tracking-wider uppercase transition-all flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm">table_view</span>
+                  <span>Export Excel</span>
+                </button>
+                <button
+                  onClick={handlePrintSummary}
+                  className="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold tracking-wider uppercase transition-all flex items-center gap-1.5 cursor-pointer"
+                >
+                  <span className="material-symbols-outlined text-sm">print</span>
+                  <span>Print Summary</span>
+                </button>
               </div>
             </div>
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-              <input value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Search history..." className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-              <select value={historyType} onChange={(event) => setHistoryType(event.target.value)} className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none">{HISTORY_TYPES.map((item) => <option key={item} value={item}>{item === "all" ? "All statuses" : item.replace("_", " ")}</option>)}</select>
-              <select value={historyWindow} onChange={(event) => setHistoryWindow(event.target.value === "custom" ? "custom" : Number(event.target.value))} className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none">{HISTORY_WINDOWS.map((item) => <option key={item} value={item}>Last {item} day{item > 1 ? "s" : ""}</option>)}<option value="custom">Custom range</option></select>
+
+            {/* Filter controls */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <input
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                placeholder="Search past guest, phone, note, counter..."
+                className="bg-[#12121c] border border-white/10 rounded-xl px-4 py-3 text-xs text-white placeholder:text-white/40 focus:border-violet-500 focus:outline-none"
+              />
+              <select
+                value={historyType}
+                onChange={(e) => setHistoryType(e.target.value)}
+                className="bg-[#12121c] border border-white/10 rounded-xl px-4 py-3 text-xs text-white focus:border-violet-500 focus:outline-none cursor-pointer"
+              >
+                {HISTORY_TYPES.map((t) => (
+                  <option key={t} value={t} className="bg-[#12121c] text-white">
+                    {t === "all" ? "All History Types" : t.replace("_", " ").toUpperCase()}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={historyWindow}
+                onChange={(e) => setHistoryWindow(e.target.value === "custom" ? "custom" : Number(e.target.value))}
+                className="bg-[#12121c] border border-white/10 rounded-xl px-4 py-3 text-xs text-white focus:border-violet-500 focus:outline-none cursor-pointer"
+              >
+                {HISTORY_WINDOWS.map((d) => (
+                  <option key={d} value={d} className="bg-[#12121c] text-white">
+                    Last {d} day{d > 1 ? "s" : ""}
+                  </option>
+                ))}
+                <option value="custom" className="bg-[#12121c] text-white">Custom Date Range</option>
+              </select>
             </div>
-            {historyWindow === "custom" && <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><input type="date" value={customStart} onChange={(event) => setCustomStart(event.target.value)} className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" /><input type="date" value={customEnd} onChange={(event) => setCustomEnd(event.target.value)} className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" /></div>}
+
+            {historyWindow === "custom" && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 rounded-xl bg-white/[0.02] border border-white/10">
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono mb-1 block">Start Date</label>
+                  <input
+                    type="date"
+                    value={customStart}
+                    onChange={(e) => setCustomStart(e.target.value)}
+                    className="w-full bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono mb-1 block">End Date</label>
+                  <input
+                    type="date"
+                    value={customEnd}
+                    onChange={(e) => setCustomEnd(e.target.value)}
+                    className="w-full bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white"
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* History Results */}
             <div className="space-y-4">
-              {historyGroups.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-on-surface-variant">No history found.</div> : historyGroups.map((group) => (
-                <div key={group.label} className="space-y-3">
-                  <div className="rounded-xl border border-white/5 bg-background/90 px-4 py-3">
-                    <div className="flex items-center justify-between gap-4">
-                      <p className="text-[11px] uppercase tracking-[0.18em] text-on-surface-variant">{group.label}</p>
-                      <p className="text-[11px] text-on-surface-variant">Served {group.totals.served} • Left {group.totals.left} • No-show {group.totals.noShow}</p>
+              {historyGroups.length === 0 ? (
+                <div className="p-12 rounded-3xl border border-dashed border-white/10 bg-[#0e0e14]/50 text-center">
+                  <span className="material-symbols-outlined text-4xl text-white/20 mb-2">folder_open</span>
+                  <p className="text-xs text-white/50">No history entries found matching this date range or filter.</p>
+                </div>
+              ) : (
+                historyGroups.map((group) => (
+                  <div key={group.label} className="space-y-3">
+                    <div className="flex items-center justify-between px-4 py-2 rounded-xl bg-white/[0.03] border border-white/5">
+                      <span className="text-xs font-mono font-bold uppercase tracking-wider text-violet-400">
+                        {group.label}
+                      </span>
+                      <span className="text-[11px] text-white/40 font-mono">
+                        Served {group.totals.served} • Left {group.totals.left} • No-show {group.totals.noShow}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2">
+                      {group.entries.map((entry) => (
+                        <div
+                          key={entry.id}
+                          className="p-3.5 rounded-xl bg-[#0e0e14]/80 border border-white/5 flex items-center justify-between gap-4"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-semibold text-xs text-white">{entry.display_name || "Guest"}</span>
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase ${
+                                entry.history_type === "served"
+                                  ? "bg-emerald-500/15 text-emerald-300"
+                                  : entry.history_type === "no_show"
+                                  ? "bg-red-500/15 text-red-300"
+                                  : "bg-white/10 text-white/60"
+                              }`}>
+                                {(entry.history_type || "served").replace("_", " ")}
+                              </span>
+                              {entry.service_counter && (
+                                <span className="text-[10px] text-white/40 font-mono">Counter: {entry.service_counter}</span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-white/40 mt-0.5">
+                              {entry.phone_number || "-"} • {entry.member_count || 1} pax • Completed {formatTime(entry.completed_at)}
+                            </p>
+                          </div>
+
+                          <button
+                            onClick={() => handleRestoreHistoryEntry(entry)}
+                            className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] text-white/70 hover:text-white transition-all cursor-pointer shrink-0"
+                          >
+                            Restore
+                          </button>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                  {group.entries.map((entry) => (
-                    <div key={entry.id} className="rounded-2xl border border-white/5 bg-surface-container-low/50 p-4">
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-bold">{entry.display_name || "Guest"}</p>
-                            <span className="rounded bg-surface-container-high px-2 py-0.5 text-[10px] uppercase tracking-wider">{(entry.history_type || "served").replace("_", " ")}</span>
-                            {entry.service_counter && <span className="rounded bg-white/5 px-2 py-0.5 text-[10px] uppercase tracking-wider text-on-surface-variant">{entry.service_counter}</span>}
-                          </div>
-                          <p className="text-xs text-on-surface-variant mt-1">{entry.phone_number || "-"} • {entry.member_count || 1} members • Joined {formatTime(entry.joined_at)}</p>
-                          {entry.party_note && <p className="text-xs text-on-surface-variant mt-2">Party note: {entry.party_note}</p>}
-                          {entry.staff_note && <p className="text-xs text-secondary mt-1">Staff note: {entry.staff_note}</p>}
-                        </div>
-                        <div className="text-right">
-                          <p className="text-[10px] uppercase tracking-widest text-on-surface-variant">Completed</p>
-                          <p className="mt-1 font-semibold">{formatTime(entry.completed_at)}</p>
-                          <button onClick={() => handleRestoreHistoryEntry(entry)} className="mt-3 rounded-lg bg-surface-container-high px-3 py-2 text-xs">Restore</button>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ))}
+                ))
+              )}
             </div>
+
             {historyHasMore && (
               <div className="pt-4 text-center">
                 <button
                   type="button"
                   onClick={() => fetchHistory(historyLastDoc)}
                   disabled={historyLoadingMore}
-                  className="rounded-xl bg-surface-container-high px-6 py-2.5 text-xs font-semibold uppercase tracking-widest text-on-surface hover:bg-surface-variant transition-colors disabled:opacity-50"
+                  className="px-6 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold uppercase tracking-wider text-white transition-all disabled:opacity-50 cursor-pointer"
                 >
-                  {historyLoadingMore ? "Loading..." : "Load older history"}
+                  {historyLoadingMore ? "Loading..." : "Load Older Archives"}
                 </button>
               </div>
             )}
           </div>
         )}
 
+        {/* SETTINGS TAB */}
         {activeTab === "settings" && ownerView && (
           <div className="space-y-6">
-            <div><h3 className="text-xl font-headline font-bold">Store Settings</h3><p className="text-sm text-on-surface-variant mt-1">Branding, roles, store hours, holidays, and queue settings.</p></div>
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-              <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6 space-y-4">
-                <input value={settings.store_logo} onChange={(event) => setSettings((prev) => ({ ...prev, store_logo: event.target.value }))} placeholder="Material icon name" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <input value={settings.cover_image_url} onChange={(event) => setSettings((prev) => ({ ...prev, cover_image_url: event.target.value }))} placeholder="Cover image URL" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <div className="grid grid-cols-2 gap-3">
-                  <input type="color" value={settings.brand_primary} onChange={(event) => setSettings((prev) => ({ ...prev, brand_primary: event.target.value }))} className="h-12 rounded-xl border border-white/10 bg-surface-container-high px-2" />
-                  <input type="color" value={settings.brand_secondary} onChange={(event) => setSettings((prev) => ({ ...prev, brand_secondary: event.target.value }))} className="h-12 rounded-xl border border-white/10 bg-surface-container-high px-2" />
+            <div>
+              <h2 className="text-xl font-headline font-bold text-white">Store Configuration & Rules</h2>
+              <p className="text-xs text-white/50 mt-1">Branding, queue constraints, business schedules, and team delegation.</p>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Branding & Visuals */}
+              <div className="p-6 rounded-2xl bg-[#0e0e14]/90 border border-white/10 space-y-4">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-white">Branding & Identity</h3>
+                
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Material Icon Name</label>
+                  <input
+                    value={settings.store_logo}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, store_logo: e.target.value }))}
+                    placeholder="e.g. storefront, local_cafe, local_hospital"
+                    className="w-full bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                  />
                 </div>
-                <textarea value={settings.announcement} onChange={(event) => setSettings((prev) => ({ ...prev, announcement: event.target.value }))} rows={3} placeholder="Announcement for customers" className="w-full resize-none rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <input type="number" min="0" value={settings.fast_pass_price} onChange={(event) => setSettings((prev) => ({ ...prev, fast_pass_price: event.target.value }))} placeholder="Fast pass price" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <input value={settings.timezone} onChange={(event) => setSettings((prev) => ({ ...prev, timezone: event.target.value }))} placeholder="Timezone (e.g. Asia/Kolkata)" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
+
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Cover Image URL</label>
+                  <input
+                    value={settings.cover_image_url}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, cover_image_url: e.target.value }))}
+                    placeholder="https://..."
+                    className="w-full bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Primary Brand Color</label>
+                    <input
+                      type="color"
+                      value={settings.brand_primary}
+                      onChange={(e) => setSettings((prev) => ({ ...prev, brand_primary: e.target.value }))}
+                      className="w-full h-10 rounded-xl bg-[#12121c] border border-white/10 p-1 cursor-pointer"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Secondary Color</label>
+                    <input
+                      type="color"
+                      value={settings.brand_secondary}
+                      onChange={(e) => setSettings((prev) => ({ ...prev, brand_secondary: e.target.value }))}
+                      className="w-full h-10 rounded-xl bg-[#12121c] border border-white/10 p-1 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Customer Announcement Banner</label>
+                  <textarea
+                    rows={2}
+                    value={settings.announcement}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, announcement: e.target.value }))}
+                    placeholder="Message shown at top of customer pass..."
+                    className="w-full resize-none bg-[#12121c] border border-white/10 rounded-xl p-3 text-xs text-white focus:border-violet-500 focus:outline-none"
+                  />
+                </div>
               </div>
-              <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6 space-y-4">
-                <label className="flex items-center justify-between rounded-xl bg-surface-container-high px-4 py-3"><span>Holiday mode</span><input type="checkbox" checked={settings.holiday_mode} onChange={(event) => setSettings((prev) => ({ ...prev, holiday_mode: event.target.checked }))} /></label>
-                <input value={settings.holiday_reason} onChange={(event) => setSettings((prev) => ({ ...prev, holiday_reason: event.target.value }))} placeholder="Holiday reason" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <input value={settings.closed_reason} onChange={(event) => setSettings((prev) => ({ ...prev, closed_reason: event.target.value }))} placeholder="Closed reason" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <label className="flex items-center justify-between rounded-xl bg-surface-container-high px-4 py-3"><span>Pause queue</span><input type="checkbox" checked={settings.queue_paused} onChange={(event) => setSettings((prev) => ({ ...prev, queue_paused: event.target.checked }))} /></label>
-                <input value={settings.paused_reason} onChange={(event) => setSettings((prev) => ({ ...prev, paused_reason: event.target.value }))} placeholder="Paused reason" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <label className="flex items-center justify-between rounded-xl bg-surface-container-high px-4 py-3"><span>Disable new joins</span><input type="checkbox" checked={settings.join_disabled} onChange={(event) => setSettings((prev) => ({ ...prev, join_disabled: event.target.checked }))} /></label>
-                <input value={settings.join_disabled_reason} onChange={(event) => setSettings((prev) => ({ ...prev, join_disabled_reason: event.target.value }))} placeholder="Join disabled reason" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <input type="number" min="0" value={settings.max_queue_size} onChange={(event) => setSettings((prev) => ({ ...prev, max_queue_size: event.target.value }))} placeholder="Max queue size (0 = unlimited)" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <label className="flex items-center justify-between rounded-xl bg-surface-container-high px-4 py-3"><span>Enable schedule display</span><input type="checkbox" checked={settings.schedule_enabled} onChange={(event) => setSettings((prev) => ({ ...prev, schedule_enabled: event.target.checked }))} /></label>
-              </div>
-            </div>
-            <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6 space-y-3">
-              <h4 className="text-sm font-bold">Business schedule</h4>
-              {DAYS.map(([key, label]) => <div key={key} className="grid grid-cols-1 gap-3 rounded-xl bg-surface-container px-4 py-4 sm:grid-cols-[120px_90px_1fr_1fr] sm:items-center"><span>{label}</span><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={settings.schedule[key].enabled} onChange={(event) => setSettings((prev) => ({ ...prev, schedule: { ...prev.schedule, [key]: { ...prev.schedule[key], enabled: event.target.checked } } }))} />Open</label><input type="time" value={settings.schedule[key].open} onChange={(event) => setSettings((prev) => ({ ...prev, schedule: { ...prev.schedule, [key]: { ...prev.schedule[key], open: event.target.value } } }))} className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" /><input type="time" value={settings.schedule[key].close} onChange={(event) => setSettings((prev) => ({ ...prev, schedule: { ...prev.schedule, [key]: { ...prev.schedule[key], close: event.target.value } } }))} className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" /></div>)}
-            </div>
-            <div className="rounded-2xl border border-white/5 bg-surface-container-low/60 p-6 space-y-4">
-              <h4 className="text-sm font-bold">Team access</h4>
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_180px_160px]">
-                <input value={staffDraft.email} onChange={(event) => setStaffDraft((prev) => ({ ...prev, email: event.target.value }))} placeholder="staff@example.com" className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <select value={staffDraft.role} onChange={(event) => setStaffDraft((prev) => ({ ...prev, role: event.target.value }))} className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none"><option value="manager">Manager</option><option value="staff">Staff</option></select>
-                <button onClick={handleAddStaffMember} className="rounded-xl bg-surface-container-high px-4 py-3 text-xs uppercase tracking-widest">Add member</button>
-              </div>
-              <div className="space-y-3">
-                {staffMembers.length === 0 ? <p className="text-sm text-on-surface-variant">No team members added yet.</p> : staffMembers.map((member) => <div key={member.id} className="flex items-center justify-between rounded-xl bg-surface-container px-4 py-3"><div><p className="text-sm font-medium">{member.email}</p><p className="text-[10px] uppercase tracking-widest text-on-surface-variant mt-1">{member.role}</p></div><button onClick={() => removeStoreStaffMember(storeId, member.email)} className="rounded-lg bg-error/10 px-3 py-2 text-xs text-error">Remove</button></div>)}
+
+              {/* Operational Rules */}
+              <div className="p-6 rounded-2xl bg-[#0e0e14]/90 border border-white/10 space-y-4">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-white">Queue Operational Constraints</h3>
+
+                <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                  <div>
+                    <span className="text-xs font-semibold text-white block">Holiday Mode</span>
+                    <span className="text-[10px] text-white/40">Displays venue as temporarily closed</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.holiday_mode}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, holiday_mode: e.target.checked }))}
+                    className="w-5 h-5 rounded accent-violet-600 cursor-pointer"
+                  />
+                </div>
+
+                {settings.holiday_mode && (
+                  <input
+                    value={settings.holiday_reason}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, holiday_reason: e.target.value }))}
+                    placeholder="Holiday reason (e.g. Renovation, National Holiday)"
+                    className="w-full bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                  />
+                )}
+
+                <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                  <div>
+                    <span className="text-xs font-semibold text-white block">Pause Queue</span>
+                    <span className="text-[10px] text-white/40">Prevents counter calling without clearing</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.queue_paused}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, queue_paused: e.target.checked }))}
+                    className="w-5 h-5 rounded accent-violet-600 cursor-pointer"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                  <div>
+                    <span className="text-xs font-semibold text-white block">Disable New Joins</span>
+                    <span className="text-[10px] text-white/40">Stops QR scans from adding new tickets</span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={settings.join_disabled}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, join_disabled: e.target.checked }))}
+                    className="w-5 h-5 rounded accent-violet-600 cursor-pointer"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Max Queue Size (0 = unlimited)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={settings.max_queue_size}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, max_queue_size: e.target.value }))}
+                    className="w-full bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Operating Timezone</label>
+                  <input
+                    value={settings.timezone}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, timezone: e.target.value }))}
+                    placeholder="Asia/Kolkata"
+                    className="w-full bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                  />
+                </div>
               </div>
             </div>
 
-            <button onClick={handleSaveSettings} disabled={savingSettings} className="w-full rounded-xl bg-gradient-to-r from-primary-container to-secondary py-4 font-headline font-bold text-white disabled:opacity-50">{savingSettings ? "Saving..." : "Save settings"}</button>
+            {/* Weekly Operating Schedule */}
+            <div className="p-6 rounded-2xl bg-[#0e0e14]/90 border border-white/10 space-y-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold uppercase tracking-wider text-white">Weekly Operating Schedule</h3>
+                <label className="flex items-center gap-2 text-xs text-white/60 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={settings.schedule_enabled}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, schedule_enabled: e.target.checked }))}
+                    className="rounded accent-violet-600"
+                  />
+                  <span>Enforce schedule auto open/close</span>
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2">
+                {DAYS.map(([key, label]) => (
+                  <div
+                    key={key}
+                    className="p-3 rounded-xl bg-white/[0.02] border border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                  >
+                    <span className="w-28 font-medium text-white">{label}</span>
+                    <label className="flex items-center gap-2 text-white/70">
+                      <input
+                        type="checkbox"
+                        checked={settings.schedule[key]?.enabled}
+                        onChange={(e) =>
+                          setSettings((prev) => ({
+                            ...prev,
+                            schedule: {
+                              ...prev.schedule,
+                              [key]: { ...prev.schedule[key], enabled: e.target.checked },
+                            },
+                          }))
+                        }
+                        className="rounded accent-violet-600"
+                      />
+                      <span>Open</span>
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="time"
+                        value={settings.schedule[key]?.open || "09:00"}
+                        onChange={(e) =>
+                          setSettings((prev) => ({
+                            ...prev,
+                            schedule: {
+                              ...prev.schedule,
+                              [key]: { ...prev.schedule[key], open: e.target.value },
+                            },
+                          }))
+                        }
+                        className="bg-[#12121c] border border-white/10 rounded-lg px-2.5 py-1 text-xs text-white"
+                      />
+                      <span className="text-white/40">to</span>
+                      <input
+                        type="time"
+                        value={settings.schedule[key]?.close || "22:00"}
+                        onChange={(e) =>
+                          setSettings((prev) => ({
+                            ...prev,
+                            schedule: {
+                              ...prev.schedule,
+                              [key]: { ...prev.schedule[key], close: e.target.value },
+                            },
+                          }))
+                        }
+                        className="bg-[#12121c] border border-white/10 rounded-lg px-2.5 py-1 text-xs text-white"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Team Access */}
+            <div className="p-6 rounded-2xl bg-[#0e0e14]/90 border border-white/10 space-y-4">
+              <h3 className="text-sm font-semibold uppercase tracking-wider text-white">Team Staff Access</h3>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_150px_130px] gap-2">
+                <input
+                  type="email"
+                  value={staffDraft.email}
+                  onChange={(e) => setStaffDraft((prev) => ({ ...prev, email: e.target.value }))}
+                  placeholder="colleague@store.com"
+                  className="bg-[#12121c] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none"
+                />
+                <select
+                  value={staffDraft.role}
+                  onChange={(e) => setStaffDraft((prev) => ({ ...prev, role: e.target.value }))}
+                  className="bg-[#12121c] border border-white/10 rounded-xl px-3 py-2.5 text-xs text-white focus:border-violet-500 focus:outline-none cursor-pointer"
+                >
+                  <option value="manager">Manager</option>
+                  <option value="staff">Staff Operator</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={handleAddStaffMember}
+                  className="px-4 py-2.5 rounded-xl bg-violet-600 hover:bg-violet-500 text-white font-semibold text-xs transition-all cursor-pointer"
+                >
+                  Add Member
+                </button>
+              </div>
+
+              <div className="space-y-2 mt-3">
+                {staffMembers.length === 0 ? (
+                  <p className="text-xs text-white/40">No staff accounts invited yet.</p>
+                ) : (
+                  staffMembers.map((member) => (
+                    <div
+                      key={member.id}
+                      className="p-3 rounded-xl bg-white/[0.03] border border-white/5 flex items-center justify-between text-xs"
+                    >
+                      <div>
+                        <span className="font-semibold text-white block">{member.email}</span>
+                        <span className="text-[10px] text-violet-400 font-mono uppercase">{member.role}</span>
+                      </div>
+                      <button
+                        onClick={() => removeStoreStaffMember(storeId, member.email)}
+                        className="px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 text-xs transition-colors cursor-pointer"
+                      >
+                        Revoke
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <button
+              onClick={handleSaveSettings}
+              disabled={savingSettings}
+              className="w-full py-4 rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-cyan-500 hover:opacity-95 text-white font-headline font-bold text-sm tracking-wide shadow-lg shadow-violet-600/30 transition-all cursor-pointer disabled:opacity-50"
+            >
+              {savingSettings ? "Saving Changes..." : "Save Store Settings"}
+            </button>
           </div>
         )}
 
+        {/* AUDIT TAB */}
         {activeTab === "audit" && (
-          <div className="space-y-3">
-            <div><h3 className="text-xl font-headline font-bold">Audit Log</h3><p className="text-sm text-on-surface-variant mt-1">Every queue operation, close/open action, and cleanup event lands here.</p></div>
-            {auditData.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-10 text-center text-on-surface-variant">No audit events yet.</div> : auditData.map((item) => <div key={item.id} className="rounded-2xl border border-white/5 bg-surface-container-low/50 p-4"><div className="flex items-center justify-between gap-4"><div><p className="font-bold capitalize">{item.action.replace(/_/g, " ")}</p><p className="text-xs text-on-surface-variant mt-1">{item.display_name || item.target_entry_id || item.reason || "Store event"}</p></div><span className="text-xs text-on-surface-variant">{formatTime(item.created_at)}</span></div></div>)}
+          <div className="space-y-4">
+            <div>
+              <h2 className="text-xl font-headline font-bold text-white">Immutable Security Audit Trail</h2>
+              <p className="text-xs text-white/50 mt-1">Every queue action, status toggle, and settings update is cryptographically logged.</p>
+            </div>
+
+            {auditData.length === 0 ? (
+              <div className="p-12 rounded-3xl border border-dashed border-white/10 bg-[#0e0e14]/50 text-center">
+                <span className="material-symbols-outlined text-4xl text-white/20 mb-2">shield</span>
+                <p className="text-xs text-white/50">No security events logged in this session.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {auditData.map((item) => (
+                  <div
+                    key={item.id}
+                    className="p-3.5 rounded-xl bg-[#0e0e14]/80 border border-white/5 flex items-center justify-between gap-4 text-xs"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="w-2 h-2 rounded-full bg-cyan-400" />
+                      <div>
+                        <span className="font-semibold text-white capitalize">{item.action?.replace(/_/g, " ")}</span>
+                        <p className="text-[11px] text-white/40 mt-0.5">
+                          {item.display_name || item.target_entry_id || item.reason || "System operational event"}
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-mono text-white/40 shrink-0">
+                      {formatTime(item.created_at)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
+
       </main>
 
-      <ToastStack
-        toasts={toasts}
-        onDismiss={dismissToast}
-      />
+      {/* Global Toast Stack */}
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+
+      {/* Confirmation Dialog */}
       <ConfirmDialog
         open={Boolean(confirmState)}
         title={confirmState?.title}
@@ -1146,56 +2035,134 @@ export default function AdminDashboard({ adminUser }) {
         onCancel={confirmState?.onCancel}
       />
 
+      {/* Walk-In / Edit Entry Modal */}
       {modalState && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-surface-container p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
-            <div className="flex items-center justify-between mb-5"><h3 className="text-lg font-headline font-bold">{modalState.type === "create" ? "Add Walk-in" : "Edit Entry"}</h3><button onClick={() => setModalState(null)} className="rounded-full bg-surface-container-high p-2"><span className="material-symbols-outlined">close</span></button></div>
-            <div className="space-y-4">
-              <input value={draft.name} onChange={(event) => setDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="Name" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-              <div className="grid grid-cols-2 gap-4">
-                <input value={draft.phone} onChange={(event) => setDraft((prev) => ({ ...prev, phone: event.target.value.replace(/[^0-9]/g, "").slice(0, 10) }))} placeholder="Phone" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <input type="number" min="1" max="20" value={draft.members} onChange={(event) => setDraft((prev) => ({ ...prev, members: Number(event.target.value) || 1 }))} placeholder="Members" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-3xl border border-white/15 bg-[#0e0e14] p-6 sm:p-7 shadow-2xl relative">
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-lg font-headline font-bold text-white">
+                {modalState.type === "create" ? "Add Walk-In Guest" : "Edit Queue Entry"}
+              </h3>
+              <button
+                onClick={() => setModalState(null)}
+                className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 text-white/60 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <span className="material-symbols-outlined text-base">close</span>
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Customer / Party Name</label>
+                <input
+                  value={draft.name}
+                  onChange={(e) => setDraft((prev) => ({ ...prev, name: e.target.value }))}
+                  placeholder="e.g. Rahul Sharma"
+                  className="w-full bg-[#14141e] border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder:text-white/30 focus:border-violet-500 focus:outline-none"
+                />
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <input value={draft.staff_note} onChange={(event) => setDraft((prev) => ({ ...prev, staff_note: event.target.value }))} placeholder="Staff note" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-                <input value={draft.service_counter} onChange={(event) => setDraft((prev) => ({ ...prev, service_counter: event.target.value.slice(0, 40) }))} placeholder="Counter label" className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Phone Number (10 digits)</label>
+                  <input
+                    value={draft.phone}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, phone: e.target.value.replace(/[^0-9]/g, "").slice(0, 10) }))}
+                    placeholder="9876543210"
+                    className="w-full bg-[#14141e] border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder:text-white/30 focus:border-violet-500 focus:outline-none font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Party Size (Members)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="20"
+                    value={draft.members}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, members: Number(e.target.value) || 1 }))}
+                    className="w-full bg-[#14141e] border border-white/10 rounded-xl px-4 py-2.5 text-white focus:border-violet-500 focus:outline-none"
+                  />
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <select value={draft.priority_level} onChange={(event) => setDraft((prev) => ({ ...prev, priority_level: Number(event.target.value) }))} className="w-full rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none"><option value={0}>Normal</option><option value={1}>Priority front</option></select>
-                {modalState.type === "create" ? (
-                  <label className="flex items-center justify-center gap-2 rounded-xl border border-error/20 bg-error/10 px-4 py-3 text-xs text-error cursor-pointer">
-                    <input type="checkbox" checked={draft.emergency_priority} onChange={(event) => setDraft((prev) => ({ ...prev, emergency_priority: event.target.checked }))} className="accent-error w-4 h-4" />
-                    <strong>Emergency Override</strong>
-                  </label>
-                ) : (
-                  <div className="rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 text-xs text-on-surface-variant flex items-center justify-center text-center">
-                    Phone numbers must be unique.
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Staff Internal Note</label>
+                  <input
+                    value={draft.staff_note}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, staff_note: e.target.value }))}
+                    placeholder="e.g. VIP guest, urgent"
+                    className="w-full bg-[#14141e] border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder:text-white/30 focus:border-violet-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Target Counter</label>
+                  <input
+                    value={draft.service_counter}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, service_counter: e.target.value.slice(0, 40) }))}
+                    placeholder="Counter 1"
+                    className="w-full bg-[#14141e] border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder:text-white/30 focus:border-violet-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {modalState.type === "create" && (
+                <label className="flex items-center gap-2.5 p-3 rounded-xl bg-red-500/10 border border-red-500/20 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={draft.emergency_priority}
+                    onChange={(e) => setDraft((prev) => ({ ...prev, emergency_priority: e.target.checked }))}
+                    className="w-4 h-4 rounded accent-red-500 cursor-pointer"
+                  />
+                  <div>
+                    <span className="font-semibold text-red-400 block">Emergency Front Insertion</span>
+                    <span className="text-[10px] text-red-300/60">Inserts immediately at position #1 ahead of current queue</span>
                   </div>
-                )}
+                </label>
+              )}
+
+              <div>
+                <label className="text-[10px] text-white/50 uppercase font-mono block mb-1">Customer Request / Party Note</label>
+                <textarea
+                  rows={2}
+                  value={draft.party_note}
+                  onChange={(e) => setDraft((prev) => ({ ...prev, party_note: e.target.value }))}
+                  placeholder="e.g. Wheelchair access, corner booth..."
+                  className="w-full resize-none bg-[#14141e] border border-white/10 rounded-xl p-3 text-white placeholder:text-white/30 focus:border-violet-500 focus:outline-none"
+                />
               </div>
-              <textarea value={draft.party_note} onChange={(event) => setDraft((prev) => ({ ...prev, party_note: event.target.value }))} rows={3} placeholder="Party note" className="w-full resize-none rounded-xl border border-white/10 bg-surface-container-high px-4 py-3 outline-none" />
-              <div className="flex flex-wrap gap-2">
-                {NOTE_TEMPLATES.map((note) => (
+
+              {/* Note presets */}
+              <div className="flex flex-wrap gap-1.5">
+                {NOTE_TEMPLATES.map((n) => (
                   <button
-                    key={note}
+                    key={n}
                     type="button"
-                    onClick={() => setDraft((prev) => ({ ...prev, party_note: prev.party_note ? `${prev.party_note}, ${note}`.slice(0, 120) : note }))}
-                    className="rounded-full bg-surface-container-high px-3 py-2 text-[11px] uppercase tracking-[0.16em] text-on-surface-variant"
+                    onClick={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        party_note: prev.party_note ? `${prev.party_note}, ${n}`.slice(0, 120) : n,
+                      }))
+                    }
+                    className="px-2 py-0.5 rounded-md bg-white/5 hover:bg-white/10 text-[10px] text-white/50 hover:text-white transition-colors cursor-pointer"
                   >
-                    {note}
+                    + {n}
                   </button>
                 ))}
               </div>
-              <button onClick={handleDraftSubmit} disabled={draftBusy} className="w-full rounded-xl bg-gradient-to-r from-primary-container to-secondary py-4 font-headline font-bold text-white disabled:opacity-50">{draftBusy ? "Saving..." : modalState.type === "create" ? "Add to queue" : "Save changes"}</button>
+
+              <button
+                onClick={handleDraftSubmit}
+                disabled={draftBusy}
+                className="w-full mt-2 py-3.5 rounded-xl bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white font-semibold text-xs uppercase tracking-wider shadow-lg shadow-violet-600/30 transition-all cursor-pointer disabled:opacity-50"
+              >
+                {draftBusy ? "Saving..." : modalState.type === "create" ? "Add to Queue" : "Update Entry"}
+              </button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
-
-
-
-
-
 }

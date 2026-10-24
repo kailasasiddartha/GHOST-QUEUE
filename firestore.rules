@@ -48,10 +48,10 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    // Ensure a self-service entry update only touches heartbeat/signal fields.
+    // Ensure a self-service entry update only touches heartbeat/signal/skip fields.
     function canSelfUpdateEntry() {
       return request.resource.data.diff(resource.data).affectedKeys()
-               .hasOnly(["last_active", "fcm_token", "running_late", "running_late_at"])
+               .hasOnly(["last_active", "fcm_token", "running_late", "running_late_at", "skips_used", "queue_index"])
         && (!('last_active' in request.resource.data)
               || request.resource.data.last_active is timestamp)
         && (!('fcm_token' in request.resource.data)
@@ -62,7 +62,7 @@ service cloud.firestore {
     }
 
     // ─── publicStores ─────────────────────────────────────────────────────────
-    // Customer-facing projection. Now written by the client SDK (store staff).
+    // Customer-facing projection. Read by everyone (TV, QR scan, queue tracker).
 
     match /publicStores/{storeId} {
       // Anyone (including anonymous visitors) can read store listings.
@@ -72,31 +72,36 @@ service cloud.firestore {
       allow create: if isRealUser()
         && request.resource.data.storeId == storeId;
 
-      // Store staff can update the projection (callNext, settings, etc.).
-      allow update: if isStoreStaff(storeId);
+      // Store staff can update freely; customers update live counters during join/leave.
+      allow update: if isStoreStaff(storeId)
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(["current_serving_index", "live_party_count", "live_member_count", "last_active"]));
 
       // Only owner can delete.
       allow delete: if isStoreOwner(storeId);
 
-      // Live queue sub-collection (read-only for customers).
+      // Live queue sub-collection (projection of waiting parties).
       match /liveQueue/{entryId} {
         allow read: if true;
-        allow write: if isStoreStaff(storeId);
+        allow write: if isStoreStaff(storeId) || isSelfEntry(entryId);
       }
     }
 
     // ─── stores/{storeId} ─────────────────────────────────────────────────────
-    // Private store record — staff only.
+    // Store root record.
 
     match /stores/{storeId} {
-      allow read: if isRealUser() && (resource.data.ownerId == request.auth.uid || isStoreStaff(storeId));
+      // Read allowed for everyone (customers check if store exists and live counters).
+      allow read: if true;
 
       // Registration: real user creates a store they own.
       allow create: if isRealUser()
         && request.resource.data.ownerId == request.auth.uid;
 
-      // Staff can update (operational state, settings, counter increments).
-      allow update: if isStoreStaff(storeId);
+      // Staff can update; customers update live counters during join/leave.
+      allow update: if isStoreStaff(storeId)
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(["next_queue_index", "next_front_queue_index", "current_serving_index", "live_party_count", "live_member_count", "last_active"]));
 
       // No deletes from client.
       allow delete: if false;
@@ -106,7 +111,8 @@ service cloud.firestore {
     // Operational settings + live counters.
 
     match /stores/{storeId}/meta/info {
-      allow read: if isStoreStaff(storeId);
+      // Read allowed for everyone (customers check if store is open, paused, capacity, etc.).
+      allow read: if true;
 
       // Created during store registration by the owner.
       allow create: if isRealUser()
@@ -114,8 +120,10 @@ service cloud.firestore {
             || (exists(/databases/$(database)/documents/stores/$(storeId))
                 && storeDoc(storeId).data.ownerId == request.auth.uid));
 
-      // Staff update it for every queue operation (callNext, settings, etc.).
-      allow update: if isStoreStaff(storeId);
+      // Staff update freely; customers update queue counters during join/leave.
+      allow update: if isStoreStaff(storeId)
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(["next_queue_index", "next_front_queue_index", "live_party_count", "live_member_count", "last_active"]));
 
       allow delete: if false;
     }
@@ -124,7 +132,7 @@ service cloud.firestore {
     // Live queue entries.
 
     match /stores/{storeId}/entries/{entryId} {
-      // Staff see all entries; customers see their own (entryId == uid for online joins).
+      // Staff see all entries; customers see their own ticket.
       allow read: if isStoreStaff(storeId) || isSelfEntry(entryId);
 
       // Online join: authenticated customer creates their own entry (entryId == uid).
@@ -132,9 +140,10 @@ service cloud.firestore {
       allow create: if isStoreStaff(storeId)
         || (isSignedIn() && request.resource.data.userId == request.auth.uid);
 
-      // Customers update only heartbeat/signal fields; staff update freely.
+      // Customers update heartbeat/signals or queue_index swap; staff update freely.
       allow update: if isStoreStaff(storeId)
-        || (isSelfEntry(entryId) && canSelfUpdateEntry());
+        || (isSelfEntry(entryId) && canSelfUpdateEntry())
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["queue_index"]));
 
       // Customers can delete their own entry (leave queue); staff can delete any.
       allow delete: if isStoreStaff(storeId) || isSelfEntry(entryId);

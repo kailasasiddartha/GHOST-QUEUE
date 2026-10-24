@@ -14,7 +14,6 @@ import {
   getDoc,
   getDocs,
   limit,
-  onSnapshot,
   orderBy,
   query,
   runTransaction,
@@ -50,12 +49,14 @@ export function sanitizeEntryInput(payload = {}) {
 }
 
 // Firestore document reference helpers
-const storeDocRef  = (storeId)          => doc(db, "stores", storeId);
-const metaDocRef   = (storeId)          => doc(db, "stores", storeId, "meta", "info");
-const publicDocRef = (storeId)          => doc(db, "publicStores", storeId);
-const entryDocRef  = (storeId, entryId) => doc(db, "stores", storeId, "entries", entryId);
-const historyCol   = (storeId)          => collection(db, "stores", storeId, "history");
-const auditCol     = (storeId)          => collection(db, "stores", storeId, "audit");
+const storeDocRef            = (storeId)          => doc(db, "stores", storeId);
+const metaDocRef             = (storeId)          => doc(db, "stores", storeId, "meta", "info");
+const publicDocRef           = (storeId)          => doc(db, "publicStores", storeId);
+const publicLiveQueueDocRef  = (storeId, entryId) => doc(db, "publicStores", storeId, "liveQueue", entryId);
+const publicLiveQueueCol     = (storeId)          => collection(db, "publicStores", storeId, "liveQueue");
+const entryDocRef            = (storeId, entryId) => doc(db, "stores", storeId, "entries", entryId);
+const historyCol             = (storeId)          => collection(db, "stores", storeId, "history");
+const auditCol               = (storeId)          => collection(db, "stores", storeId, "audit");
 
 const DEFAULT_SCHEDULE = {
   mon: { enabled: true,  open: "09:00", close: "18:00" },
@@ -189,21 +190,6 @@ export async function registerStore({ storeName, category, location, timezone = 
   return { ok: true, storeId };
 }
 
-// ─── QUEUE READS ──────────────────────────────────────────────────────────────
-
-export function sortQueueEntries(entries = []) {
-  return [...entries].sort((a, b) =>
-    Number(a.queue_index ?? Number.MAX_SAFE_INTEGER) - Number(b.queue_index ?? Number.MAX_SAFE_INTEGER)
-  );
-}
-
-export function subscribeToQueue(storeId, callback) {
-  return onSnapshot(
-    query(collection(db, "stores", storeId, "entries"), orderBy("queue_index", "asc")),
-    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() })))
-  );
-}
-
 // ─── CUSTOMER QUEUE ACTIONS ───────────────────────────────────────────────────
 
 /**
@@ -220,6 +206,7 @@ export async function joinQueue(storeId, _ignored, payload = {}) {
 
   // Customer entries are keyed by their UID so they can only appear once
   const newEntryRef = entryDocRef(storeId, user.uid);
+  const publicEntryRef = publicLiveQueueDocRef(storeId, user.uid);
 
   return runTransaction(db, async (tx) => {
     const metaSnap = await tx.get(metaDocRef(storeId));
@@ -227,11 +214,11 @@ export async function joinQueue(storeId, _ignored, payload = {}) {
 
     const meta = metaSnap.data();
     if (meta.holiday_mode)  throw new Error("The store is on holiday.");
-    if (!meta.is_open)       throw new Error("This store is currently closed.");
-    if (meta.queue_paused)   throw new Error("The queue is temporarily paused.");
-    if (meta.join_disabled)  throw new Error("New queue joins are disabled.");
+    if (!meta.is_open)       throw new Error("STORE_CLOSED");
+    if (meta.queue_paused)   throw new Error("QUEUE_PAUSED");
+    if (meta.join_disabled)  throw new Error("QUEUE_DISABLED");
     if (meta.max_queue_size > 0 && (meta.live_party_count ?? 0) >= meta.max_queue_size) {
-      throw new Error("The queue is full. Please try again later.");
+      throw new Error("QUEUE_FULL");
     }
 
     const existingEntry = await tx.get(newEntryRef);
@@ -250,13 +237,22 @@ export async function joinQueue(storeId, _ignored, payload = {}) {
 
     tx.set(newEntryRef, {
       ...sanitized,
-      userId:     user.uid,
+      userId:      user.uid,
       queue_index: nextIndex,
-      joined_at:  serverTimestamp(),
+      joined_at:   serverTimestamp(),
       last_active: Timestamp.now(),
-      skips_used: 0,
-      fcm_token:  null,
-      source:     "online",
+      skips_used:  0,
+      fcm_token:   null,
+      source:      "online",
+    });
+    tx.set(publicEntryRef, {
+      display_name: sanitized.display_name,
+      member_count: sanitized.member_count,
+      party_note:   sanitized.party_note,
+      queue_index:  nextIndex,
+      joined_at:    serverTimestamp(),
+      last_active:  Timestamp.now(),
+      source:       "online",
     });
     tx.set(metaDocRef(storeId),   counterUpdate, { merge: true });
     tx.set(storeDocRef(storeId),  counterUpdate, { merge: true });
@@ -285,20 +281,11 @@ export async function leaveQueue(storeId) {
     const histRef = doc(historyCol(storeId));
     tx.set(histRef, { ...entry, history_type: "left", completed_at: serverTimestamp(), left_at: serverTimestamp() });
     tx.delete(entryRef);
+    tx.delete(publicLiveQueueDocRef(storeId, user.uid));
     tx.set(metaDocRef(storeId),   { live_party_count: updatedParty, live_member_count: updatedMembers, last_active: serverTimestamp() }, { merge: true });
     tx.set(storeDocRef(storeId),  { live_party_count: updatedParty, live_member_count: updatedMembers }, { merge: true });
     tx.set(publicDocRef(storeId), { live_party_count: updatedParty, live_member_count: updatedMembers }, { merge: true });
   });
-}
-
-/**
- * Customer signals they're running late. Replaces runningLateSignal Cloud Function.
- */
-export async function signalRunningLate(storeId) {
-  const user = auth.currentUser;
-  if (!user) throw new Error("Not authenticated.");
-  await updateDoc(entryDocRef(storeId, user.uid), { running_late: true, running_late_at: serverTimestamp() });
-  return { ok: true };
 }
 
 /**
@@ -314,21 +301,25 @@ export async function smartSkip(storeId) {
     if (!entrySnap.exists()) throw new Error("You are not in this queue.");
 
     const entry = entrySnap.data();
-    if ((entry.skips_used ?? 0) >= 2) throw new Error("You have used all your skips.");
+    if ((entry.skips_used ?? 0) >= 2) throw new Error("MAX_SKIPS_REACHED");
 
-    // Fetch the entry directly after this one
+    // Fetch the entry directly after this one from public liveQueue
     const nextSnap = await getDocs(
-      query(collection(db, "stores", storeId, "entries"),
+      query(publicLiveQueueCol(storeId),
         where("queue_index", ">", entry.queue_index), orderBy("queue_index", "asc"), limit(1))
     );
-    if (nextSnap.empty) throw new Error("You are already at the back.");
+    if (nextSnap.empty) throw new Error("ALREADY_LAST");
 
     const nextDoc  = nextSnap.docs[0];
     const nextData = nextDoc.data();
 
-    // Swap queue_index values
-    tx.update(entryRef,     { queue_index: nextData.queue_index, skips_used: (entry.skips_used ?? 0) + 1 });
-    tx.update(nextDoc.ref,  { queue_index: entry.queue_index });
+    // Swap queue_index values in private entries
+    tx.update(entryRef,                         { queue_index: nextData.queue_index, skips_used: (entry.skips_used ?? 0) + 1 });
+    tx.update(entryDocRef(storeId, nextDoc.id), { queue_index: entry.queue_index });
+
+    // Swap queue_index values in public liveQueue
+    tx.update(publicLiveQueueDocRef(storeId, user.uid),   { queue_index: nextData.queue_index });
+    tx.update(publicLiveQueueDocRef(storeId, nextDoc.id), { queue_index: entry.queue_index });
   });
 }
 
@@ -373,6 +364,7 @@ export async function callNext(storeId) {
     const histRef = doc(historyCol(storeId));
     tx.set(histRef, { ...entry, history_type: "served", completed_at: serverTimestamp() });
     tx.delete(firstDoc.ref);
+    tx.delete(publicLiveQueueDocRef(storeId, firstDoc.id));
     tx.set(metaDocRef(storeId),   { current_serving_index: newServing, live_party_count: newParty, live_member_count: newMembers, last_active: serverTimestamp() }, { merge: true });
     tx.set(storeDocRef(storeId),  { current_serving_index: newServing, live_party_count: newParty, live_member_count: newMembers }, { merge: true });
     tx.set(publicDocRef(storeId), { current_serving_index: newServing, live_party_count: newParty, live_member_count: newMembers }, { merge: true });
@@ -391,6 +383,7 @@ export async function addWalkInCustomer(storeId, payload) {
 
   const sanitized = sanitizeEntryInput(payload);
   const newEntryRef = doc(collection(db, "stores", storeId, "entries"));
+  const publicEntryRef = publicLiveQueueDocRef(storeId, newEntryRef.id);
 
   await runTransaction(db, async (tx) => {
     const metaSnap = await tx.get(metaDocRef(storeId));
@@ -418,6 +411,15 @@ export async function addWalkInCustomer(storeId, payload) {
       source:      "walk_in",
       created_by:  user.uid,
     });
+    tx.set(publicEntryRef, {
+      display_name: sanitized.display_name,
+      member_count: sanitized.member_count,
+      party_note:   sanitized.party_note,
+      queue_index:  nextIndex,
+      joined_at:    serverTimestamp(),
+      last_active:  Timestamp.now(),
+      source:       "walk_in",
+    });
     tx.set(metaDocRef(storeId),   { ...counterUpdate, live_party_count: newParty, live_member_count: newMembers, last_active: serverTimestamp() }, { merge: true });
     tx.set(storeDocRef(storeId),  { ...counterUpdate, live_party_count: newParty, live_member_count: newMembers }, { merge: true });
     tx.set(publicDocRef(storeId), { live_party_count: newParty, live_member_count: newMembers }, { merge: true });
@@ -433,6 +435,13 @@ export async function addWalkInCustomer(storeId, payload) {
 export async function updateQueueEntry(storeId, entryId, payload) {
   const sanitized = sanitizeEntryInput(payload);
   await updateDoc(entryDocRef(storeId, entryId), { ...sanitized, updated_at: serverTimestamp() });
+  try {
+    await updateDoc(publicLiveQueueDocRef(storeId, entryId), {
+      display_name: sanitized.display_name,
+      member_count: sanitized.member_count,
+      party_note:   sanitized.party_note,
+    });
+  } catch { /* ignore if not present in public projection */ }
   logAudit(storeId, "entry_updated", { target_entry_id: entryId });
   return { ok: true };
 }
@@ -456,6 +465,10 @@ export async function skipEntryForward(storeId, entryId) {
     const nextDoc  = nextSnap.docs[0];
     tx.update(eRef,         { queue_index: nextDoc.data().queue_index });
     tx.update(nextDoc.ref,  { queue_index: entry.queue_index });
+    try {
+      tx.update(publicLiveQueueDocRef(storeId, entryId),    { queue_index: nextDoc.data().queue_index });
+      tx.update(publicLiveQueueDocRef(storeId, nextDoc.id), { queue_index: entry.queue_index });
+    } catch { /* ignore */ }
   });
 }
 
@@ -480,6 +493,15 @@ export async function recallEntry(storeId, entryId) {
 
     const newEntryRef = doc(collection(db, "stores", storeId, "entries"));
     tx.set(newEntryRef, { ...entry, queue_index: nextIndex, source: "recalled", recalled_at: serverTimestamp() });
+    tx.set(publicLiveQueueDocRef(storeId, newEntryRef.id), {
+      display_name: entry.display_name || "",
+      member_count: entry.member_count || 1,
+      party_note:   entry.party_note   || "",
+      queue_index:  nextIndex,
+      joined_at:    serverTimestamp(),
+      last_active:  Timestamp.now(),
+      source:       "recalled",
+    });
     tx.set(metaDocRef(storeId),   { next_front_queue_index: nextIndex, live_party_count: newParty, live_member_count: newMembers, last_active: serverTimestamp() }, { merge: true });
     tx.set(storeDocRef(storeId),  { live_party_count: newParty, live_member_count: newMembers }, { merge: true });
     tx.set(publicDocRef(storeId), { live_party_count: newParty, live_member_count: newMembers }, { merge: true });
@@ -504,6 +526,7 @@ export async function markNoShow(storeId, entryId) {
     const histRef = doc(historyCol(storeId));
     tx.set(histRef, { ...entry, history_type: "no_show", completed_at: serverTimestamp() });
     tx.delete(eRef);
+    tx.delete(publicLiveQueueDocRef(storeId, entryId));
     tx.set(metaDocRef(storeId),   { live_party_count: newParty, live_member_count: newMembers, last_active: serverTimestamp() }, { merge: true });
     tx.set(storeDocRef(storeId),  { live_party_count: newParty, live_member_count: newMembers }, { merge: true });
     tx.set(publicDocRef(storeId), { live_party_count: newParty, live_member_count: newMembers }, { merge: true });
@@ -515,7 +538,7 @@ export async function markNoShow(storeId, entryId) {
  */
 export async function clearQueueWithHistory(storeId, reason = "Store closed by admin") {
   const entriesSnap = await getDocs(collection(db, "stores", storeId, "entries"));
-  if (entriesSnap.empty) return { ok: true };
+  const publicSnap  = await getDocs(publicLiveQueueCol(storeId));
 
   // Process in chunks of 400 (Firestore batch limit is 500)
   const CHUNK = 400;
@@ -526,6 +549,14 @@ export async function clearQueueWithHistory(storeId, reason = "Store closed by a
       batch.set(doc(historyCol(storeId)), { ...d.data(), history_type: "stale", cleared_reason: reason, completed_at: serverTimestamp() });
       batch.delete(d.ref);
     });
+    await batch.commit();
+  }
+
+  // Clear public liveQueue projection
+  const pDocs = publicSnap.docs;
+  for (let i = 0; i < pDocs.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    pDocs.slice(i, i + CHUNK).forEach((d) => batch.delete(d.ref));
     await batch.commit();
   }
 
@@ -554,6 +585,9 @@ export async function markVIPEntry(storeId, entryId) {
     const nextFront = Number(meta.next_front_queue_index ?? 0) - 1;
 
     tx.update(eRef, { priority_level: 1, queue_index: nextFront, vip_granted_at: serverTimestamp() });
+    try {
+      tx.update(publicLiveQueueDocRef(storeId, entryId), { queue_index: nextFront });
+    } catch { /* ignore */ }
     tx.set(metaDocRef(storeId), { next_front_queue_index: nextFront }, { merge: true });
   });
 }
@@ -579,14 +613,20 @@ export async function reServeQueueEntry(storeId, entryId) {
 
     const newEntryRef = doc(collection(db, "stores", storeId, "entries"));
     tx.set(newEntryRef, { ...entry, queue_index: nextFront, source: "re_served", re_served_at: serverTimestamp(), history_type: deleteField() });
+    tx.set(publicLiveQueueDocRef(storeId, newEntryRef.id), {
+      display_name: entry.display_name || "",
+      member_count: entry.member_count || 1,
+      party_note:   entry.party_note   || "",
+      queue_index:  nextFront,
+      joined_at:    serverTimestamp(),
+      last_active:  Timestamp.now(),
+      source:       "re_served",
+    });
     tx.set(metaDocRef(storeId),   { next_front_queue_index: nextFront, live_party_count: newParty, live_member_count: newMembers, last_active: serverTimestamp() }, { merge: true });
     tx.set(storeDocRef(storeId),  { live_party_count: newParty, live_member_count: newMembers }, { merge: true });
     tx.set(publicDocRef(storeId), { live_party_count: newParty, live_member_count: newMembers }, { merge: true });
   });
 }
-
-// Keep old alias
-export const reServeEntry = reServeQueueEntry;
 
 /**
  * Adds an emergency-priority entry at position #1. Replaces emergencyAddEntry Cloud Function.
@@ -702,83 +742,4 @@ export async function clearStoreBroadcast(storeId) {
   batch.set(publicDocRef(storeId), payload, { merge: true });
   await batch.commit();
   return { ok: true };
-}
-
-/**
- * Saves virtual lobby CMS content. Replaces saveVirtualLobbyContent Cloud Function.
- */
-export async function saveVirtualLobby(storeId, lobby) {
-  const sanitized = lobby && typeof lobby === "object"
-    ? {
-        type:    String(lobby.type    || "none"),
-        content: String(lobby.content || "").slice(0, 2000),
-        title:   String(lobby.title   || "").slice(0, 80),
-      }
-    : null;
-  const payload = { lobby_content: sanitized };
-  const batch   = writeBatch(db);
-  batch.set(metaDocRef(storeId),   payload, { merge: true });
-  batch.set(publicDocRef(storeId), payload, { merge: true });
-  await batch.commit();
-  return { ok: true };
-}
-
-// ─── SNAPSHOTS ────────────────────────────────────────────────────────────────
-
-/**
- * Restores queue from a saved snapshot. Replaces rollbackQueueSnapshot Cloud Function.
- */
-export async function rollbackSnapshot(storeId, snapshotId) {
-  const snapDoc = await getDoc(doc(db, "stores", storeId, "snapshots", snapshotId));
-  if (!snapDoc.exists()) throw new Error("Snapshot not found.");
-
-  const entries = snapDoc.data().entries || [];
-
-  // Pause queue while restoring
-  await setDoc(metaDocRef(storeId), { queue_paused: true, paused_reason: "Restoring snapshot..." }, { merge: true });
-
-  try {
-    // Clear current queue
-    const current = await getDocs(collection(db, "stores", storeId, "entries"));
-    if (!current.empty) {
-      const clearBatch = writeBatch(db);
-      current.docs.forEach((d) => clearBatch.delete(d.ref));
-      await clearBatch.commit();
-    }
-
-    // Restore snapshot entries
-    if (entries.length > 0) {
-      const restoreBatch = writeBatch(db);
-      entries.forEach((entry) => {
-        const ref = doc(collection(db, "stores", storeId, "entries"));
-        restoreBatch.set(ref, {
-          display_name: entry.display_name || "Restored Customer",
-          member_count: entry.member_count || 1,
-          queue_index:  entry.queue_index,
-          joined_at:    entry.joined_at || serverTimestamp(),
-          last_active:  Timestamp.now(),
-          skips_used:   0,
-          fcm_token:    null,
-          source:       "restored",
-        });
-      });
-      await restoreBatch.commit();
-    }
-  } finally {
-    await setDoc(metaDocRef(storeId), { queue_paused: false, paused_reason: "" }, { merge: true });
-  }
-
-  const metaUpdate = {
-    live_party_count:  entries.length,
-    live_member_count: entries.reduce((s, e) => s + (e.member_count || 1), 0),
-    last_active:       serverTimestamp(),
-  };
-  const finalBatch = writeBatch(db);
-  finalBatch.set(metaDocRef(storeId),   metaUpdate, { merge: true });
-  finalBatch.set(storeDocRef(storeId),  metaUpdate, { merge: true });
-  finalBatch.set(publicDocRef(storeId), metaUpdate, { merge: true });
-  await finalBatch.commit();
-
-  logAudit(storeId, "queue_snapshot_restored", { snapshot_id: snapshotId, entry_count: entries.length });
-  return { ok: true, restored: entries.length };
 }

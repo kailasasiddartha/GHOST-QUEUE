@@ -47,10 +47,16 @@ class RouteErrorBoundary extends Component {
             <span className="material-symbols-outlined text-5xl text-error">error</span>
             <h1 className="mt-4 text-2xl font-headline font-bold">{this.props.title || "Something went wrong"}</h1>
             <p className="mt-3 text-sm text-on-surface-variant">{this.props.description || "An unexpected error occurred. Reload to recover."}</p>
+            {this.state.error && (
+              <div className="mt-4 p-4 rounded-xl bg-black/60 border border-red-500/30 text-left overflow-auto max-h-60 text-xs font-mono text-red-300">
+                <p className="font-bold text-red-400 mb-1">{this.state.error.name}: {this.state.error.message}</p>
+                <pre className="text-[10px] text-white/50 whitespace-pre-wrap">{this.state.error.stack}</pre>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => window.location.reload()}
-              className="mt-6 w-full rounded-xl bg-gradient-to-r from-primary-container to-secondary py-3 font-headline font-bold text-white"
+              className="mt-6 w-full rounded-xl bg-gradient-to-r from-primary-container to-secondary py-3 font-headline font-bold text-white cursor-pointer"
             >
               Reload
             </button>

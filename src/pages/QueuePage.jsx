@@ -40,8 +40,17 @@ export default function QueuePage({ storeIdParam }) {
   const [userId, setUserId] = useState(null);
   const [error, setError] = useState(null);
   const [activeTab, setActiveTab] = useState("queue");
-  const [guestProfile, setGuestProfile] = useState({ name: "", phone: "", members: 1 });
   const { toasts, pushToast, dismissToast } = useToast(3200);
+  const [guestProfile, setGuestProfile] = useState(() => {
+    try {
+      const draft = sessionStorage.getItem("gq_guest_draft");
+      if (draft) return JSON.parse(draft);
+    } catch { /* ignore */ }
+    const qName = params.get("name") || "";
+    const qPhone = params.get("phone") || "";
+    const qMembers = Number(params.get("members")) || 1;
+    return { name: qName, phone: qPhone, members: qMembers };
+  });
   const [leaving, setLeaving] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState(
     typeof window !== "undefined" && "Notification" in window ? window.Notification.permission : "denied"
@@ -994,7 +1003,7 @@ export default function QueuePage({ storeIdParam }) {
                 </section>
 
                 {error && <p className="text-error text-center text-sm">{error}</p>}
-                <JoinQueueForm onJoin={handleJoin} storeName={storeName} />
+                <JoinQueueForm onJoin={handleJoin} storeName={storeName} initialProfile={guestProfile} />
               </>
             )}
           </div>

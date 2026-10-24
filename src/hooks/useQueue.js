@@ -29,7 +29,7 @@ function buildInitialState() {
   };
 }
 
-export function useQueue(storeId, userId) {
+export function useQueue(storeId, userId, isStaff = false) {
   const [state, setState] = useState(buildInitialState);
   const totalAtJoinRef = useRef(null);
   const wasInQueueRef = useRef(false);
@@ -44,7 +44,7 @@ export function useQueue(storeId, userId) {
     wasInQueueRef.current = false;
     avgServiceMinsRef.current = AVG_SERVICE_MINS;
 
-    const ready = { queue: false, store: false, entry: !userId };
+    const ready = { queue: false, store: false, entry: !userId || isStaff };
     const markReady = (key) => {
       ready[key] = true;
       if (ready.queue && ready.store && ready.entry) {
@@ -67,7 +67,8 @@ export function useQueue(storeId, userId) {
 
     const unsubscribers = [];
 
-    if (!userId) {
+    if (isStaff) {
+      // Staff view: full entries with staff notes and phone numbers from stores/{storeId}/entries
       unsubscribers.push(onSnapshot(
         query(collection(db, "stores", storeId, "entries"), orderBy("queue_index", "asc")),
         (snapshot) => {
@@ -84,11 +85,12 @@ export function useQueue(storeId, userId) {
         () => setState((prev) => ({ ...prev, error: "Could not load store details.", loading: false }))
       ));
     } else {
+      // Customer view: public sanitized liveQueue projection from publicStores/{storeId}/liveQueue
       unsubscribers.push(onSnapshot(
         query(collection(db, "publicStores", storeId, "liveQueue"), orderBy("queue_index", "asc")),
         (snapshot) => {
           const entries = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
-          const myIndex = entries.findIndex((entry) => entry.id === userId);
+          const myIndex = userId ? entries.findIndex((entry) => entry.id === userId) : -1;
           const inQueue = myIndex !== -1;
 
           if (inQueue && totalAtJoinRef.current === null) {
@@ -139,18 +141,20 @@ export function useQueue(storeId, userId) {
         () => setState((prev) => ({ ...prev, error: "Could not load store details.", loading: false }))
       ));
 
-      unsubscribers.push(onSnapshot(
-        doc(db, "stores", storeId, "entries", userId),
-        (snapshot) => {
-          setState((prev) => ({ ...prev, myEntry: snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null }));
-          markReady("entry");
-        },
-        () => setState((prev) => ({ ...prev, error: "Could not load your queue ticket.", loading: false }))
-      ));
+      if (userId) {
+        unsubscribers.push(onSnapshot(
+          doc(db, "stores", storeId, "entries", userId),
+          (snapshot) => {
+            setState((prev) => ({ ...prev, myEntry: snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null }));
+            markReady("entry");
+          },
+          () => setState((prev) => ({ ...prev, error: "Could not load your queue ticket.", loading: false }))
+        ));
+      }
     }
 
     let stopHeartbeat = null;
-    if (userId) {
+    if (userId && !isStaff) {
       stopHeartbeat = startVisibilityAwareHeartbeat(() => updateHeartbeat(storeId, userId));
     }
 
@@ -158,7 +162,7 @@ export function useQueue(storeId, userId) {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
       if (stopHeartbeat) stopHeartbeat();
     };
-  }, [storeId, userId]);
+  }, [storeId, userId, isStaff]);
 
   return state;
 }

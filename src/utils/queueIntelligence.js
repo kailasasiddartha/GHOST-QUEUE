@@ -7,59 +7,6 @@
 const AVG_SERVICE_FALLBACK = 3; // minutes
 
 // ─────────────────────────────────────────────────────────────────────────────
-// G-2: Smart ETA Engine — sliding window self-calibrating ETA
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Computes a smart ETA range using the last N live serve intervals.
- * Returns { min, max, avg, confidence } all in minutes.
- *
- * @param {object[]} recentHistory - Array of history docs with completed_at timestamps
- * @param {number} position - Customer's current position (1 = next up)
- * @param {number} memberCount - Customer's party size
- * @param {number} fallbackAvg - Fallback avg service mins from store meta
- */
-export function computeSmartETA(recentHistory, position, memberCount, fallbackAvg = AVG_SERVICE_FALLBACK) {
-  if (position <= 0) return { min: 0, max: 0, avg: 0, confidence: "high" };
-
-  // Extract inter-serve intervals from the last N served entries (max 8, last 30 mins)
-  const now = Date.now();
-  const cutoff = now - 30 * 60 * 1000;
-  const servedTimes = recentHistory
-    .filter((entry) => entry.history_type === "served" && entry.completed_at?.toMillis?.() > cutoff)
-    .map((entry) => entry.completed_at.toMillis())
-    .sort((a, b) => a - b)
-    .slice(-8);
-
-  let computedAvg = Number(fallbackAvg) || AVG_SERVICE_FALLBACK;
-  let stdDev = computedAvg * 0.3; // default uncertainty: 30%
-  let confidence = "low";
-
-  if (servedTimes.length >= 3) {
-    const intervals = servedTimes.slice(1).map((t, i) => (t - servedTimes[i]) / 60000);
-    const avg = intervals.reduce((s, v) => s + v, 0) / intervals.length;
-    const variance = intervals.reduce((s, v) => s + (v - avg) ** 2, 0) / intervals.length;
-    computedAvg = Math.max(0.5, avg);
-    stdDev = Math.sqrt(variance);
-    confidence = servedTimes.length >= 6 ? "high" : "medium";
-  } else if (servedTimes.length >= 1) {
-    confidence = "medium";
-  }
-
-  const weight = Math.max(1, Number(memberCount) || 1);
-  const baseWait = computedAvg * (position - 1 + weight * 0.5);
-  const margin = stdDev * 1.2 * Math.sqrt(position);
-
-  return {
-    avg: Math.round(baseWait),
-    min: Math.max(0, Math.round(baseWait - margin)),
-    max: Math.round(baseWait + margin),
-    confidence,
-    rawAvgPerParty: computedAvg,
-  };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // G-3: No-Show Risk Score — per-entry prediction
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -188,33 +135,7 @@ export function computeQueueHealthScore({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// G-4: Adaptive Queue Cap recommendation
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Returns a recommended max queue size based on current serve velocity.
- * Returns null if no recommendation is needed.
- *
- * @param {object} meta - Store meta
- * @param {object[]} recentHistory - Recent history documents
- * @param {number} targetMaxWaitMins - Target max wait time
- */
-export function computeAdaptiveCapRecommendation(meta = {}, _recentHistory = [], targetMaxWaitMins = 20) {
-  const avgServiceMins = Number(meta.avg_service_mins) || AVG_SERVICE_FALLBACK;
-  const livePartyCount = Number(meta.live_party_count) || 0;
-  const currentMax = Number(meta.max_queue_size) || 0;
-
-  // How many parties can be served within the target wait window?
-  const safeCapacity = Math.max(5, Math.floor(targetMaxWaitMins / avgServiceMins));
-
-  if (livePartyCount > safeCapacity * 1.3 && (currentMax === 0 || currentMax > safeCapacity)) {
-    return safeCapacity;
-  }
-  return null;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
+// Health UI Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function getHealthColor(level) {
@@ -236,10 +157,4 @@ export function getHealthIcon(level) {
   if (level === "good") return "check_circle";
   if (level === "warning") return "warning";
   return "emergency";
-}
-
-export function getConfidenceBadge(confidence) {
-  if (confidence === "high") return { text: "High accuracy", color: "text-emerald-400" };
-  if (confidence === "medium") return { text: "Estimated", color: "text-amber-400" };
-  return { text: "Approximate", color: "text-on-surface-variant" };
 }

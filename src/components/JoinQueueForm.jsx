@@ -1,11 +1,11 @@
 import React, { useState } from "react";
 import { useLocale } from "../utils/i18n";
 
-export default function JoinQueueForm({ onJoin, storeName }) {
+export default function JoinQueueForm({ onJoin, storeName, initialProfile = {} }) {
   const { t } = useLocale();
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [members, setMembers] = useState(1);
+  const [name, setName] = useState(initialProfile?.name || "");
+  const [phone, setPhone] = useState(initialProfile?.phone || "");
+  const [members, setMembers] = useState(initialProfile?.members || 1);
   const [partyNote, setPartyNote] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");

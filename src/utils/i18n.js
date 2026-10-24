@@ -3,7 +3,7 @@ import { getSavedLocale, saveLocale } from "./queueTicket";
 
 export const SUPPORTED_LOCALES = ["en", "hi", "te", "ta"];
 
-const translations = {
+export const translations = {
   en: {
     language: "Language",
     open: "Open",

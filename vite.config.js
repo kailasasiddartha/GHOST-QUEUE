@@ -7,6 +7,7 @@ export default defineConfig({
     alias: {
       '@': '/src',
     },
+    dedupe: ['react', 'react-dom'],
   },
   build: {
     chunkSizeWarningLimit: 650,
@@ -16,11 +17,11 @@ export default defineConfig({
           if (id.includes('node_modules/firebase')) {
             return 'firebase'
           }
-          if (id.includes('node_modules/xlsx') || id.includes('node_modules/qrcode')) {
-            return 'export-tools'
+          if (id.includes('node_modules/xlsx')) {
+            return 'export-excel'
           }
-          if (id.includes('/src/pages/AdminDashboard')) {
-            return 'admin'
+          if (id.includes('node_modules/qrcode')) {
+            return 'qr-engine'
           }
           return undefined
         },
