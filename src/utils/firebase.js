@@ -8,12 +8,12 @@ import {
 import { getMessaging, isSupported } from "firebase/messaging";
 
 const firebaseConfig = {
-  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY || "AIzaSyAPjUYMZjtvPQgPuc1AlQ9tOQ7NNHcbbpw",
-  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || "ghost-queue-4ddef.firebaseapp.com",
-  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID || "ghost-queue-4ddef",
-  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "ghost-queue-4ddef.firebasestorage.app",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "394215346541",
-  appId:             import.meta.env.VITE_FIREBASE_APP_ID || "1:394215346541:web:37467130d03b8ed1338a64",
+  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
 const app = initializeApp(firebaseConfig);

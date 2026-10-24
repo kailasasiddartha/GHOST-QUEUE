@@ -2,13 +2,15 @@
 importScripts("https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js");
 
+const params = new URLSearchParams(self.location.search);
+
 firebase.initializeApp({
-  apiKey: "AIzaSyAPjUYMZjtvPQgPuc1AlQ9tOQ7NNHcbbpw",
-  authDomain: "ghost-queue-4ddef.firebaseapp.com",
-  projectId: "ghost-queue-4ddef",
-  storageBucket: "ghost-queue-4ddef.firebasestorage.app",
-  messagingSenderId: "394215346541",
-  appId: "1:394215346541:web:37467130d03b8ed1338a64",
+  apiKey: params.get("apiKey") || "",
+  authDomain: params.get("authDomain") || "",
+  projectId: params.get("projectId") || "",
+  storageBucket: params.get("storageBucket") || "",
+  messagingSenderId: params.get("messagingSenderId") || "",
+  appId: params.get("appId") || "",
 });
 
 const messaging = firebase.messaging();
